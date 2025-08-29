@@ -1,0 +1,105 @@
+install.packages('survminer')
+
+library(survival)
+library(survminer)
+library(dplyr)
+library(vctrs)
+library(survminer)
+library(ggplot2)
+
+##   
+
+rownames(LUAD_expression_df) <-LUAD_expression_df$Gene
+LUAD_expression_df = LUAD_expression_df[,-1]
+LUAD_expression_df = as.data.frame(t(LUAD_expression_df))
+
+# gene list
+#### S1PR4, SFTPB, S1PR1, ST6GALNAC5, HPGD, UGT8, LCT, SMPDL3B
+gene_list=c("S1PR4", "SFTPB", "S1PR1", "ST6GALNAC5", "HPGD", "UGT8", "LCT", "SMPDL3B","B4GALNT1")
+
+Surv_df=LUAD_expression_df[rownames(LUAD_expression_df) %in% gene_list,]
+Surv_df=as.data.frame(t(Surv_df))
+Surv_df$barcode=rownames(Surv_df)
+
+
+clinical_df=col_df[,c("barcode","days_to_death","days_to_last_follow_up","vital_status")]
+
+Surv_df=merge(Surv_df,clinical_df,by='barcode')
+Surv_df$Survival_status <- ifelse(Surv_df$vital_status=="Alive",0,1)
+
+Surv_df$HPGD_status <- ifelse(Surv_df$HPGD>=895,"High","Low")
+Surv_df$LCT_status <- ifelse(Surv_df$LCT>=31.5,"High","Low")
+Surv_df$S1PR1_status <- ifelse(Surv_df$S1PR1>=246,"High","Low")
+Surv_df$S1PR4_status <- ifelse(Surv_df$S1PR4>=208,"High","Low")
+Surv_df$SFTPB_status <- ifelse(Surv_df$SFTPB>=746100,"High","Low")
+Surv_df$SMPDL3B_status <- ifelse(Surv_df$SMPDL3B>=2866,"High","Low")
+Surv_df$ST6GALNAC5_status <- ifelse(Surv_df$ST6GALNAC5>=109,"High","Low")
+Surv_df$UGT8_status <- ifelse(Surv_df$UGT8>=21,"High","Low")
+Surv_df$B4GALNT1=ifelse(Surv_df$B4GALNT1 >= 135.5,"High","Low")
+
+write.csv(Surv_df,file='~/raw_data1/kang/Kim/Lung_surv.csv')
+
+### 
+#HPGD, 895
+#LCT, 31.5
+#S1PR1, 246
+#S1PR4, 208
+#SFTPB, 746100
+#SMPDL3B, 2866
+#ST6GALNAC5, 109
+#UGT8, 21 
+
+surv_object <- Surv(time=Surv_df$days_to_death, event=Surv_df$Survival_status)
+
+fit1 <- survfit(surv_object ~ UGT8_status, data=Surv_df)
+
+survplot_HPGD<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
+           legend.labs=c("High", "Low"), legend.title="HPGD",  
+           palette=c("orchid2", "dodgerblue2"), 
+           title="Kaplan-Meier Curve for HPGD")
+
+survplot_LCT<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
+                          legend.labs=c("High", "Low"), legend.title="LCT",  
+                          palette=c("orchid2", "dodgerblue2"), 
+                         title="Kaplan-Meier Curve for LCT")
+
+survplot_S1PR1<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
+                         legend.labs=c("High", "Low"), legend.title="S1PR1",  
+                         palette=c("orchid2", "dodgerblue2"), 
+                         title="Kaplan-Meier Curve for S1PR1")
+
+survplot_S1PR4<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
+                           legend.labs=c("High", "Low"), legend.title="S1PR4",  
+                           palette=c("orchid2", "dodgerblue2"), 
+                           title="Kaplan-Meier Curve for S1PR4")
+
+survplot_SFTPB<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
+                           legend.labs=c("High", "Low"), legend.title="SFTPB",  
+                           palette=c("orchid2", "dodgerblue2"), 
+                           title="Kaplan-Meier Curve for SFTPB")
+
+survplot_SMPDL3B<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
+                           legend.labs=c("High", "Low"), legend.title="SMPDL3B",  
+                           palette=c("orchid2", "dodgerblue2"), 
+                           title="Kaplan-Meier Curve for SMPDL3B")
+
+survplot_ST6GALNAC5<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
+                             legend.labs=c("High", "Low"), legend.title="ST6GALNAC5",  
+                             palette=c("orchid2", "dodgerblue2"), 
+                             title="Kaplan-Meier Curve for ST6GALNAC5")
+
+survplot_UGT8<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
+                                legend.labs=c("High", "Low"), legend.title="UGT8",  
+                                palette=c("orchid2", "dodgerblue2"), 
+                          title="Kaplan-Meier Curve for UGT8")
+
+survplot_B4GALNT1<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
+                          legend.labs=c("High", "Low"), legend.title="B4GALNT1",  
+                          palette=c("orchid2", "dodgerblue2"), 
+                          title="Kaplan-Meier Curve for B4GALNT1")
+
+
+combined_plot <- ggarrange(survplot_HPGD$plot, survplot_LCT$plot, survplot_S1PR1$plot,
+                           survplot_S1PR4$plot, survplot_SFTPB$plot, survplot_SMPDL3B$plot,
+                           survplot_ST6GALNAC5$plot, survplot_UGT8$plot, survplot_B4GALNT1$plot,
+                           ncol = 3, nrow = 3)
