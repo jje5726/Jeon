@@ -35,3 +35,21 @@ GO <- function(x,...){
   return(up_go)
 }
 
+KEGG <- function(x,...){
+  kk@result<- x@result[order(-x@result$Count),]
+  kk@result$Description <- factor(kk@result$Description,levels = rev(kk@result$Description))
+  
+  results<-ggplot(data =kk@result[1:...,] , aes(x = Count, y = Description,size = Count,  color = pvalue)) +
+    geom_point() + scale_color_gradient(low = "#e06663", high = "#3380bc") + theme_bw() + ylab("") + 
+    xlab("") + ggtitle("")
+  results<-results+ theme(plot.title = element_text(color="Black", size=20, face="bold.italic"),
+                          axis.title.x = element_text(color="Black", size=30, face="bold"),
+                          axis.text.x = element_text(color="Black", size=20, face="bold"),
+                          axis.text.y = element_text(color="Black", size=15, face="bold"),
+                          axis.title.y = element_text(color="Black", size=30, face="bold"),
+                          legend.text = element_text(color="Black", size=15, face="bold"),
+                          legend.title = element_text(color="Black", size=15, face="bold"))
+  return(results)
+}
+
+grid.arrange(GO(go,5),GO(go1,5),KEGG(kk,5),KEGG(kk1,5),nrow=2)
