@@ -1,0 +1,707 @@
+
+
+### Cell viability
+# ---------- Raw data ----------
+ctrl_0h  <- c(0.824,0.818,0.814,0.808,0.827,0.777,0.773,0.798,0.824,0.833,0.764,0.781,0.785,0.790,0.795,0.773,0.802,0.793)
+d05_0h   <- c(0.773,0.816,0.815,0.837,0.802,0.775,0.765,0.785,0.821,0.810,0.823,0.805,0.737,0.763,0.794,0.777,0.734,0.759)
+d1_0h    <- c(0.717,0.721,0.784,0.782,0.803,0.795,0.804,0.750,0.741,0.798,0.755,0.730,0.691,0.695,0.749,0.772,0.737,0.727)
+
+ctrl_24h <- c(1.054,1.083,1.160,1.091,1.130,1.135,1.050,1.061,1.220,1.197,1.101,0.999,1.070,1.092,1.111,1.057,1.044,1.027)
+d05_24h  <- c(0.869,0.927,1.048,1.031,0.998,0.929,0.909,0.916,0.981,1.005,0.933,1.019,0.950,0.937,0.952,0.927,0.924,0.938)
+d1_24h   <- c(0.820,0.875,0.878,0.855,0.844,0.786,0.784,0.860,0.838,0.862,0.830,0.753,1.053,0.986,0.951,0.966,0.989,0.936)
+
+ctrl_48h <- c(1.163,1.230,1.171,1.204,1.234,1.158,1.135,1.206,1.180,1.130,1.195,1.134,1.178,1.196,1.192,1.181,1.157,1.124)
+d05_48h  <- c(0.900,0.953,0.958,1.001,0.982,1.006,0.990,1.015,1.026,1.009,0.982,0.963,0.997,1.072,1.052,1.002,0.972,0.997)
+d1_48h   <- c(0.959,1.011,1.005,0.967,0.906,0.897,0.956,0.957,0.987,0.933,0.901,0.872,0.824,0.869,0.856,0.799,0.765,0.739)
+
+# --------------------
+make_block <- function(vals, time, group) tibble(Time=time, Group=group, Value=vals)
+
+viab <- bind_rows(
+  make_block(ctrl_0h,  "0h",  "Control"),
+  make_block(d05_0h,   "0h",  "0.5 µM"),
+  make_block(d1_0h,    "0h",  "1 µM"),
+  make_block(ctrl_24h, "24h", "Control"),
+  make_block(d05_24h,  "24h", "0.5 µM"),
+  make_block(d1_24h,   "24h", "1 µM"),
+  make_block(ctrl_48h, "48h", "Control"),
+  make_block(d05_48h,  "48h", "0.5 µM"),
+  make_block(d1_48h,   "48h", "1 µM")
+) |>
+  mutate(
+    Time  = factor(Time,  levels = c("0h","24h","48h")),
+    Group = factor(Group, levels = c("Control","0.5 µM","1 µM"))
+  )
+
+# ---------- Normalize to each group’s 0h mean (=100%) ----------
+viab_n <- viab |>
+  group_by(Group) |>
+  mutate(Norm = 100 * Value / mean(Value[Time=="0h"])) |>
+  ungroup()
+
+xmap <- c("0h"=1, "24h"=2, "48h"=3)
+viab_n <- viab_n |> mutate(x = xmap[as.character(Time)])
+
+# ---------- Stats (a) 그룹 내 0h vs 24/48 ----------
+stat_intra_v <- viab_n |>
+  group_by(Group) |>
+  t_test(Norm ~ Time, ref.group = "0h") |>
+  arrange(Group, group2) |>
+  add_significance("p") |>
+  mutate(
+    xmin = xmap["0h"],
+    xmax = xmap[as.character(group2)],
+    band = c("Control"=145, "0.5 µM"=135, "1 µM"=125)[as.character(Group)],
+    y.position = band + 6*(row_number()-1)
+  ) |>
+  ungroup() |>
+  filter(p.signif != "ns")
+
+# ---------- Stats (b) 같은 시간에서 Control vs 약물군 ----------
+stat_inter_v <- viab_n |>
+  group_by(Time) |>
+  t_test(Norm ~ Group, ref.group = "Control") |>
+  add_significance("p") |>
+  ungroup() |>
+  filter(p.signif != "ns") |>
+  mutate(
+    xmin = xmap[as.character(Time)] - 0.25,
+    xmax = xmap[as.character(Time)] + 0.25
+  ) |>
+  group_by(Time) |>
+  mutate(y.position = max(viab_n$Norm[viab_n$Time==first(Time)]) + 10 +
+           10*(row_number()-1)) |>
+  ungroup()
+
+# ---------- Plot ----------
+ggplot(viab_n, aes(x = x, y = Norm, color = Group, group = Group)) +
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.10) +
+  stat_pvalue_manual(stat_intra_v, label="p.signif",
+                     xmin="xmin", xmax="xmax", y.position="y.position",
+                     tip.length = 0.01, size = 4) +
+  stat_pvalue_manual(stat_inter_v, label="p.signif",
+                     xmin="xmin", xmax="xmax", y.position="y.position",
+                     tip.length = 0.01, size = 4) +
+  scale_x_continuous(breaks = xmap, labels = names(xmap)) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.18))) +
+  labs(title = "KMU-011342: Cell viability normalized to 0h (100%)",
+       x = NULL, y = "Relative viability (% of 0h)", color = NULL) +
+  theme_classic(base_family = "Times New Roman", base_size = 13) +
+  theme(plot.title = element_text(face="bold"), legend.position = "top")
+
+
+
+
+
+
+
+#### Cell count
+
+# ---------- Raw data ----------
+base_0h <- c(76.5, 79.0, 71.5, 61.5)  # 공통 baseline을 세 군에 복제 사용
+
+ctrl_24 <- c(200.5, 175.0, 167.0)
+d05_24  <- c(107.0,  88.0,  92.5)
+d1_24   <- c( 83.5,  67.5,  76.0)
+
+ctrl_48 <- c(273.5, 274.0, 269.0, 261.5)
+d05_48  <- c(106.0, 109.5, 119.5, 110.0)
+d1_48   <- c( 48.5,  44.0,  42.5,  46.5)
+
+make_block <- function(vals, time, group) tibble(Time=time, Group=group, Value=vals)
+
+count <- bind_rows(
+  make_block(base_0h, "0h",  "Control"),
+  make_block(base_0h, "0h",  "0.5 µM"),
+  make_block(base_0h, "0h",  "1 µM"),
+  make_block(ctrl_24, "24h", "Control"),
+  make_block(d05_24,  "24h", "0.5 µM"),
+  make_block(d1_24,   "24h", "1 µM"),
+  make_block(ctrl_48, "48h", "Control"),
+  make_block(d05_48,  "48h", "0.5 µM"),
+  make_block(d1_48,   "48h", "1 µM")
+) |>
+  mutate(
+    Time  = factor(Time,  levels = c("0h","24h","48h")),
+    Group = factor(Group, levels = c("Control","0.5 µM","1 µM"))
+  )
+
+# ---------- Normalize to each group’s 0h mean (=100%) ----------
+count_n <- count |>
+  group_by(Group) |>
+  mutate(Norm = 100 * Value / mean(Value[Time=="0h"])) |>
+  ungroup()
+
+xmap <- c("0h"=1, "24h"=2, "48h"=3)
+count_n <- count_n |> mutate(x = xmap[as.character(Time)])
+
+# ---------- Stats (a) 그룹 내 0h vs 24/48 ----------
+stat_intra_c <- count_n |>
+  group_by(Group) |>
+  t_test(Norm ~ Time, ref.group = "0h") |>
+  arrange(Group, group2) |>
+  add_significance("p") |>
+  mutate(
+    xmin = xmap["0h"],
+    xmax = xmap[as.character(group2)],
+    band = c("Control"=380, "0.5 µM"=160, "1 µM"=130)[as.character(Group)],
+    y.position = band + 8*(row_number()-1)
+  ) |>
+  ungroup() |>
+  filter(p.signif != "ns")
+
+# ---------- Stats (b) 같은 시간에서 Control vs 약물군 ----------
+stat_inter_c <- count_n |>
+  group_by(Time) |>
+  t_test(Norm ~ Group, ref.group = "Control") |>
+  add_significance("p") |>
+  ungroup() |>
+  filter(p.signif != "ns") |>
+  mutate(
+    xmin = xmap[as.character(Time)] - 0.25,
+    xmax = xmap[as.character(Time)] + 0.25
+  ) |>
+  group_by(Time) |>
+  mutate(y.position = max(count_n$Norm[count_n$Time==first(Time)]) + 12 +
+           10*(row_number()-1)) |>
+  ungroup()
+
+# ---------- Plot ----------
+ggplot(count_n, aes(x = x, y = Norm, color = Group, group = Group)) +
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.10) +
+  stat_pvalue_manual(stat_intra_c, label="p.signif",
+                     xmin="xmin", xmax="xmax", y.position="y.position",
+                     tip.length = 0.01, size = 4) +
+  stat_pvalue_manual(stat_inter_c, label="p.signif",
+                     xmin="xmin", xmax="xmax", y.position="y.position",
+                     tip.length = 0.01, size = 4) +
+  scale_x_continuous(breaks = xmap, labels = names(xmap)) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.20))) +
+  labs(title = "KMU-011342: Cell counts normalized to 0h (100%)",
+       x = NULL, y = "Relative cell count (% of 0h)", color = NULL) +
+  theme_classic(base_family = "Times New Roman", base_size = 13) +
+  theme(plot.title = element_text(face="bold"), legend.position = "top")
+
+
+
+
+
+# 패키지 로드
+library(tidyverse)
+library(ggpubr)
+
+# ---- 데이터 입력 ----
+df <- tribble(
+  ~Rep, ~Time, ~Group, ~Value,
+  # 1st replicate
+  1, "0h", "Control", 82,
+  1, "24h", "Control", 39,
+  1, "48h", "Control", 0,
+  1, "0h", "0.5 µM", 92,
+  1, "24h", "0.5 µM", 79,
+  1, "48h", "0.5 µM", 66,
+  1, "0h", "1 µM", 91,
+  1, "24h", "1 µM", 104,
+  1, "48h", "1 µM", 107,
+  # 2nd replicate
+  2, "0h", "Control", 155,
+  2, "24h", "Control", 85,
+  2, "48h", "Control", 42,
+  2, "0h", "0.5 µM", 160,
+  2, "24h", "0.5 µM", 124,
+  2, "48h", "0.5 µM", 116,
+  2, "0h", "1 µM", 156,
+  2, "24h", "1 µM", 130,
+  2, "48h", "1 µM", 127,
+  # 3rd replicate
+  3, "0h", "Control", 104,
+  3, "24h", "Control", 38,
+  3, "48h", "Control", 0,
+  3, "0h", "0.5 µM", 106,
+  3, "24h", "0.5 µM", 93,
+  3, "48h", "0.5 µM", 80,
+  3, "0h", "1 µM", 112,
+  3, "24h", "1 µM", 106,
+  3, "48h", "1 µM", 102
+)
+
+# factor 정렬
+df <- df %>%
+  mutate(
+    Time = factor(Time, levels = c("0h","24h","48h")),
+    Group = factor(Group, levels = c("Control","0.5 µM","1 µM"))
+  )
+
+# ---- 그래프 ----
+p <- ggplot(df, aes(x = Time, y = Value, color = Group, group = Group)) +
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15) +
+  stat_compare_means(aes(group = Group), label = "p.signif", 
+                     method = "t.test", ref.group = "Control") +
+  labs(
+    title = "KMU-11342: Wound healing (migration)",
+    y = "Relative wound closure",
+    x = NULL, color = NULL
+  ) +
+  theme_classic(base_family = "Times New Roman", base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+print(p)
+
+getwd()
+
+
+
+############# migration
+# 패키지
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+
+# ----- 1) 원자료 입력 -----
+df <- tribble(
+  ~Rep, ~Time, ~Group, ~Value,
+  # 1st
+  1, "0h","Control", 82,   1, "24h","Control", 39,  1, "48h","Control", 0,
+  1, "0h","0.5 µM",  92,   1, "24h","0.5 µM",  79,  1, "48h","0.5 µM",  66,
+  1, "0h","1 µM",    91,   1, "24h","1 µM",   104,  1, "48h","1 µM",   107,
+  # 2nd
+  2, "0h","Control",155,   2, "24h","Control", 85,  2, "48h","Control", 42,
+  2, "0h","0.5 µM", 160,   2, "24h","0.5 µM", 124,  2, "48h","0.5 µM", 116,
+  2, "0h","1 µM",   156,   2, "24h","1 µM",   130,  2, "48h","1 µM",   127,
+  # 3rd
+  3, "0h","Control",104,   3, "24h","Control", 38,  3, "48h","Control", 0,
+  3, "0h","0.5 µM", 106,   3, "24h","0.5 µM",  93,  3, "48h","0.5 µM",  80,
+  3, "0h","1 µM",   112,   3, "24h","1 µM",   106,  3, "48h","1 µM",   102
+) |>
+  mutate(
+    Time  = factor(Time,  levels = c("0h","24h","48h")),
+    Group = factor(Group, levels = c("Control","0.5 µM","1 µM"))
+  )
+
+# ----- 2) 각 군의 0h 평균 = 100% 로 정규화 -----
+df_norm <- df |>
+  group_by(Group) |>
+  mutate(Norm = 100 * Value / mean(Value[Time=="0h"])) |>
+  ungroup()
+
+# x축 위치(모든 군 동일 위치에 수직 정렬)
+xmap <- c("0h"=1, "24h"=2, "48h"=3)
+df_norm <- df_norm |> mutate(x = xmap[as.character(Time)])
+
+# ----- 3) 통계: 각 군 내 0h vs 24h/48h -----
+stat_intra <- df_norm |>
+  group_by(Group) |>
+  t_test(Norm ~ Time, ref.group = "0h") |>
+  arrange(Group, group2) |>
+  add_significance("p") |>
+  mutate(
+    xmin = xmap["0h"],
+    xmax = xmap[as.character(group2)],
+    # 브래킷 높이: 군별로 다른 밴드에 올려 겹침 방지
+    band = c("Control"=125, "0.5 µM"=135, "1 µM"=145)[as.character(Group)],
+    y.position = band + 6*(row_number()-1)
+  ) |>
+  ungroup()
+
+# (참고) 시간별로 Control과 약물군 비교
+# stat_inter <- df_norm %>%
+#   group_by(Time) %>%
+#   t_test(Norm ~ Group, ref.group = "Control") %>%
+#   add_significance("p")
+
+# ----- 4) 플롯 -----
+ggplot(df_norm, aes(x = x, y = Norm, color = Group, group = Group)) +
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.10) +
+  stat_pvalue_manual(
+    stat_intra, label = "p.signif",
+    xmin = "xmin", xmax = "xmax", y.position = "y.position",
+    tip.length = 0.01, size = 4
+  ) +
+  scale_x_continuous(breaks = xmap, labels = names(xmap)) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.15))) +
+  labs(
+    title = "KMU-11342: Wound healing normalized to 0h (100%)",
+    x = NULL, y = "Relative wound closure (% of 0h)", color = NULL
+  ) +
+  theme_classic(base_family = "Times New Roman", base_size = 13) +
+  theme(plot.title = element_text(face = "bold"),
+        legend.position = "top")
+
+# ----- 5) p-value 표 확인 -----
+stat_intra %>% select(Group, group2, p, p.signif)
+
+
+# ----- Control vs 약물군 (시간별 비교) -----
+stat_inter <- df_norm %>%
+  group_by(Time) %>%
+  t_test(Norm ~ Group, ref.group = "Control") %>%
+  add_significance("p") %>%
+  ungroup()
+
+stat_inter %>% select(Time, group1, group2, p, p.signif)
+
+
+
+# (이전 코드에서 df_norm, xmap, stat_intra, stat_inter 까지 생성)
+
+library(dplyr)
+library(ggpubr)
+library(ggplot2)
+
+# 1) 유의한 것만 남기기
+stat_intra_sig <- stat_intra %>%
+  filter(p.signif != "ns") %>%
+  # y 위치는 군별 밴드(이미 만들어둔 컬럼 사용) 그대로
+  mutate(y.position = y.position)
+
+# 2) 시간별 Control vs 약물군 (유의한 것만, 시간대별로 위에 배치)
+stat_inter_sig <- stat_inter %>%
+  filter(p.signif != "ns") %>%
+  mutate(
+    xmin = xmap[as.character(Time)] - 0.25,  # 같은 시간대 중괄호 폭
+    xmax = xmap[as.character(Time)] + 0.25
+  ) %>%
+  group_by(Time) %>%
+  mutate(
+    # 해당 시간대 데이터의 최댓값 위로 층층이 올림
+    y.position = max(df_norm$Norm[df_norm$Time == first(Time)]) + 10 +
+      10 * (row_number() - 1)
+  ) %>%
+  ungroup()
+
+# 3) 플롯: 선/점/에러바 + (intra) + (inter)
+ggplot(df_norm, aes(x = x, y = Norm, color = Group, group = Group)) +
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.10) +
+  # (a) 각 군 내부 0h vs 24/48h: 유의한 것만
+  stat_pvalue_manual(
+    stat_intra_sig, label = "p.signif",
+    xmin = "xmin", xmax = "xmax", y.position = "y.position",
+    tip.length = 0.01, size = 4
+  ) +
+  # (b) 동일 시간대 Control vs 약물군: 유의한 것만
+  stat_pvalue_manual(
+    stat_inter_sig, label = "p.signif",
+    xmin = "xmin", xmax = "xmax", y.position = "y.position",
+    tip.length = 0.01, size = 4
+  ) +
+  scale_x_continuous(breaks = xmap, labels = names(xmap)) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.18))) +
+  labs(
+    title = "KMU-11342: Wound healing normalized to 0h (100%)",
+    x = NULL, y = "Relative wound closure (% of 0h)", color = NULL
+  ) +
+  theme_classic(base_family = "Times New Roman", base_size = 13) +
+  theme(plot.title = element_text(face = "bold"),
+        legend.position = "top")
+
+
+
+
+###### spheroids
+# -----------------------------
+# 1. 데이터 입력
+# -----------------------------
+df <- data.frame(
+  Condition = rep(c("Control", "0.5uM", "1uM"), each = 2),
+  Actin = c(21.49, 21.00,   # 평균값 (1st, 2nd)
+            24.05, 23.20,
+            24.01, 24.17),
+  CD24  = c(27.22, 26.90,
+            30.26, 29.77,
+            30.24, 30.22)
+)
+
+# -----------------------------
+# 2. ΔCt 계산 (CD24 - Actin)
+# -----------------------------
+df$deltaCt <- df$CD24 - df$Actin
+
+# -----------------------------
+# 3. ΔΔCt 계산
+# Control 평균을 기준으로 처리군과 비교
+# -----------------------------
+control_mean <- mean(df$deltaCt[df$Condition == "Control"])
+df$deltaDeltaCt <- df$deltaCt - control_mean
+
+# -----------------------------
+# 4. Fold change 계산 (2^-ΔΔCt)
+# -----------------------------
+df$FoldChange <- 2^(-df$deltaDeltaCt)
+
+# -----------------------------
+# 5. 그룹별 평균 Fold-change 정리
+# -----------------------------
+library(dplyr)
+
+summary <- df %>%
+  group_by(Condition) %>%
+  summarise(
+    mean_dCt = mean(deltaCt),
+    mean_ddCt = mean(deltaDeltaCt),
+    mean_FC = mean(FoldChange)
+  )
+
+print(df)
+print(summary)
+
+
+library(dplyr)
+library(ggplot2)
+library(rstatix)
+library(ggpubr)
+
+# -----------------------------
+# 데이터 (df 활용)
+# -----------------------------
+df <- data.frame(
+  Condition = rep(c("Control", "0.5uM", "1uM"), each = 2),
+  Actin = c(21.49, 21.00, 24.05, 23.20, 24.01, 24.17),
+  CD24  = c(27.22, 26.90, 30.26, 29.77, 30.24, 30.22)
+)
+df$deltaCt <- df$CD24 - df$Actin
+control_mean <- mean(df$deltaCt[df$Condition == "Control"])
+df$deltaDeltaCt <- df$deltaCt - control_mean
+df$FoldChange <- 2^(-df$deltaDeltaCt)
+
+# -----------------------------
+# 유의성 검정 (모든 그룹 비교)
+# -----------------------------
+stat <- df %>%
+  t_test(FoldChange ~ Condition) %>%
+  add_significance("p") %>%
+  adjust_pvalue(method = "bonferroni")  # 보정 추가
+
+stat <- stat %>%
+  add_xy_position(x = "Condition", step.increase = 0.1)
+
+print(stat)
+
+# -----------------------------
+# FoldChange plot (평균 ± SE)
+# -----------------------------
+# (앞에서 만든 df, stat 그대로 사용)
+# df$Condition factor 순서 확인 (권장)
+df$Condition <- factor(df$Condition, levels = c("Control","0.5uM","1uM"))
+
+# y축 위쪽 여백 조금 늘리기(브래킷 자리 확보)
+library(ggplot2)
+library(ggpubr)
+
+ggplot(df, aes(x = Condition, y = FoldChange, fill = Condition)) +
+  stat_summary(fun = mean, geom = "bar", color = "black", width = 0.6) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  geom_jitter(width = 0.1, size = 2, alpha = 0.7) +
+  stat_pvalue_manual(
+    data = stat,                    # 브래킷용 데이터는 stat
+    label = "p.adj.signif",
+    xmin  = "xmin",                 # add_xy_position가 만든 컬럼 사용
+    xmax  = "xmax",
+    y.position = "y.position",
+    tip.length = 0.01,
+    hide.ns = FALSE,
+    inherit.aes = FALSE             # aes 상속 끄기 => 'Condition' 찾지 않음
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.20))) +
+  labs(
+    title = "Relative CD24 expression (2^-ΔΔCt)",
+    y = "Fold change (vs Control)",
+    x = NULL
+  ) +
+  theme_classic(base_family = "Times New Roman", base_size = 14) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"))
+
+
+
+
+
+library(tidyverse)
+library(ggpubr)
+library(rstatix)
+
+# -------------------------------
+# 1. 데이터 입력 (wide → long 변환)
+# -------------------------------
+data <- tribble(
+  ~Rep, ~Condition, ~I, ~II, ~III, ~IV,
+  1, "Control", 53325, 69812, 141706, 181688,
+  1, "1uM",    53092, 59266,  77765,  90859,
+  1, "2uM",    24064, 25321,  28280,  44879,
+  2, "Control", 46554, 63041, 134935, 174917,
+  2, "1uM",    46321, 52495,  70994,  84088,
+  2, "2uM",    17293, 18550,  21509,  38108,
+  3, "Control", 53059, 68966, 139897, 181182,
+  3, "1uM",    52725, 58566,  77235,  90461,
+  3, "2uM",    23713, 25253,  27758,  44454,
+  4, "Control", 46288, 62195, 133126, 174411,
+  4, "1uM",    45954, 51795,  70464,  83690,
+  4, "2uM",    16942, 18482,  20987,  37683,
+  5, "Control", 54154, 68555, 139993, 181499,
+  5, "1uM",    53262, 58743,  88006,  90189,
+  5, "2uM",    23593, 24895,  27595,  44381,
+  6, "Control", 47383, 61784, 133222, 174728,
+  6, "1uM",    46491, 51972,  81235,  83418,
+  6, "2uM",    16822, 18124,  20824,  37610
+)
+
+# wide → long 변환
+df <- data %>%
+  pivot_longer(cols = c(I, II, III, IV),
+               names_to = "Well",
+               values_to = "Value")
+
+# -------------------------------
+# 2. 통계 분석 (ANOVA + pairwise t-test)
+# -------------------------------
+stat <- df %>%
+  group_by(Rep) %>%
+  anova_test(Value ~ Condition) %>%
+  get_anova_table()
+
+pairwise <- df %>%
+  pairwise_t_test(Value ~ Condition, p.adjust.method = "bonferroni")
+
+# -------------------------------
+# 3. 시각화
+# -------------------------------
+
+stat_pvalue_manual(
+  data = pairwise,
+  label = "p.adj.signif",
+  tip.length = 0.01,
+  hide.ns = FALSE,
+  inherit.aes = FALSE   # aes 상속 끄기!
+)
+
+ggplot(df, aes(x = Condition, y = Value, fill = Condition)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 4,
+               fill = "white", color = "black") +
+  stat_pvalue_manual(
+    data = pairwise,
+    label = "p.adj.signif",
+    tip.length = 0.01,
+    hide.ns = FALSE,
+    inherit.aes = FALSE
+  ) +
+  labs(
+    title = "Organoid viability assay",
+    y = "Organoid size / viability (a.u.)",
+    x = NULL
+  ) +
+  theme_classic(base_family = "Times New Roman", base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+
+# -------------------------------
+# 1. 데이터 입력 (wide → long 변환)
+# -------------------------------
+data <- tribble(
+  ~Rep, ~Condition, ~I, ~II, ~III, ~IV,
+  1, "Control", 53325, 69812, 141706, 181688,
+  1, "1uM",    53092, 59266,  77765,  90859,
+  1, "2uM",    24064, 25321,  28280,  44879,
+  2, "Control", 46554, 63041, 134935, 174917,
+  2, "1uM",    46321, 52495,  70994,  84088,
+  2, "2uM",    17293, 18550,  21509,  38108,
+  3, "Control", 53059, 68966, 139897, 181182,
+  3, "1uM",    52725, 58566,  77235,  90461,
+  3, "2uM",    23713, 25253,  27758,  44454,
+  4, "Control", 46288, 62195, 133126, 174411,
+  4, "1uM",    45954, 51795,  70464,  83690,
+  4, "2uM",    16942, 18482,  20987,  37683,
+  5, "Control", 54154, 68555, 139993, 181499,
+  5, "1uM",    53262, 58743,  88006,  90189,
+  5, "2uM",    23593, 24895,  27595,  44381,
+  6, "Control", 47383, 61784, 133222, 174728,
+  6, "1uM",    46491, 51972,  81235,  83418,
+  6, "2uM",    16822, 18124,  20824,  37610
+)
+
+# wide → long 변환
+df <- data %>%
+  pivot_longer(cols = c(I, II, III, IV),
+               names_to = "Well",
+               values_to = "Raw")
+
+# -------------------------------
+# 2. Control = 100% 정규화
+# -------------------------------
+df <- df %>%
+  group_by(Rep, Well) %>%
+  mutate(Value = Raw / Raw[Condition == "Control"] * 100) %>%
+  ungroup()
+
+library(rstatix)
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+
+# -------------------------------
+# 1. Kruskal–Wallis test
+# -------------------------------
+kruskal_res <- df %>%
+  kruskal_test(Value ~ Condition)
+print(kruskal_res)
+
+# -------------------------------
+# 2. Dunn’s test + Bonferroni 보정
+# -------------------------------
+dunn_res <- df %>%
+  dunn_test(Value ~ Condition, p.adjust.method = "bonferroni") %>%
+  add_xy_position(x = "Condition")   # 여기서 xmin, xmax, y.position 생성
+print(dunn_res)
+
+# -------------------------------
+# 3. 시각화
+# -------------------------------
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+
+# 1) 원하는 순서로 factor 재정의
+df <- df %>%
+  mutate(Condition = factor(Condition, levels = c("Control","1uM","2uM")))
+
+# 2) Kruskal–Wallis + Dunn 사후검정 (순서 반영해서 좌표 재계산)
+kruskal_res <- df %>% kruskal_test(Value ~ Condition)
+dunn_res <- df %>%
+  dunn_test(Value ~ Condition, p.adjust.method = "bonferroni") %>%
+  add_xy_position(x = "Condition")   # xmin/xmax/y.position 생성 (새 순서 기준)
+
+# 3) 플롯
+ggplot(df, aes(x = Condition, y = Value, fill = Condition)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 4,
+               fill = "white", color = "black") +
+  stat_pvalue_manual(
+    dunn_res, label = "p.adj.signif",
+    tip.length = 0.01, hide.ns = FALSE,
+    inherit.aes = FALSE
+  ) +
+  labs(
+    title = "Organoid viability assay (Kruskal–Wallis test)",
+    y = "Organoid size / viability (a.u.)", x = NULL
+  ) +
+  theme_classic(base_family = "Times New Roman", base_size = 14) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"))
