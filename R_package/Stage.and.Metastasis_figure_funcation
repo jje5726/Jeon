@@ -1,0 +1,46 @@
+
+
+
+B4GALNT1=LUAD_expression_df[rownames(LUAD_expression_df) %in% "B4GALNT1",]
+
+B4GALNT1=as.data.frame(t(B4GALNT1))
+
+B4GALNT1$barcode<- rownames(B4GALNT1)
+
+col_df=as.data.frame(colData(data))
+
+Metastasis_df=col_df[col_df$definition =="Primary solid Tumor",][,c(1,24,39)]
+Metastasis_df$ajcc_pathologic_m[which(Metastasis_df$ajcc_pathologic_m=="M1a")] <- "M1"
+Metastasis_df$ajcc_pathologic_m[which(Metastasis_df$ajcc_pathologic_m=="M1b")] <- "M1"
+Metastasis_df$Stage <- Metastasis_df$ajcc_pathologic_stage
+Metastasis_df$Stage[which(Metastasis_df$Stage %in% c("Stage I","Stage IA","Stage IB"))]<-"Stage1"
+Metastasis_df$Stage[which(Metastasis_df$Stage %in% c("Stage II","Stage IIA","Stage IIB"))]<-"Stage2"
+Metastasis_df$Stage[which(Metastasis_df$Stage %in% c("Stage IIIA","Stage IIIB"))]<-"Stage3"
+Metastasis_df$Stage[which(Metastasis_df$Stage %in% c("Stage IV"))]<-"Stage4"
+B4GALNT1=merge(B4GALNT1,Metastasis_df,by='barcode')
+
+Final_B4GALNT1=B4GALNT1[which(B4GALNT1$ajcc_pathologic_m %in% c("M0","M1","MX")),]
+
+Final_B4GALNT1$ajcc_pathologic_m
+
+Final_B4GALNT1$ajcc_pathologic_m[which(Final_B4GALNT1$ajcc_pathologic_m== "MX")] <- "M0"
+
+Final_B4GALNT1$ajcc_pathologic_m <- factor(Final_B4GALNT1$ajcc_pathologic_m, levels=c("M0","M1"))
+
+Metastasis_df=col_df[col_df$definition =="Primary solid Tumor",][,c(1,24,39)]
+
+B4GALNT1$Stage <- factor(B4GALNT1$Stage, levels=c("Stage1","Stage2","Stage3","Stage4"))
+
+B4GALNT1[B4GALNT1$Stage %in% NA,]
+
+B4GALNT1=B4GALNT1[-which(B4GALNT1$Stage %in% NA),]
+
+colnames(Final_B4GALNT1)[3]<-"Metastasis_Status"
+
+### Boxplot 
+ggboxplot(B4GALNT1, x = "Stage", y = "B4GALNT1", 
+          color = "Stage",
+          ylab = "B4GALNT1", xlab = "Stage")+
+  stat_compare_means(method = "anova", label.y = 7000)+
+  stat_compare_means(label = "p.format", method = "t.test",
+                     ref.group = "Stage1",label.y = 6000)
