@@ -1,1 +1,56 @@
-asdfasdfadsfasdfasdf
+
+library(gridExtra)
+
+
+nu_snp=as.data.frame(nu_snp)
+
+eg = bitr(nu_snp$Gene, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+
+#GO-Enrichment analysis 
+go <- enrichGO(eg$ENTREZID, OrgDb = "org.Hs.eg.db", ont="all") #keyType ='SYMBOL',pAdjustMethod = "BH",
+
+kk <- enrichKEGG(gene         = eg$ENTREZID,
+                 organism     = 'hsa',
+                 pvalueCutoff = 1)
+
+
+GO <- function(x,...){
+  data<-x@result[order(-x@result$Count),]
+  df1<-rbind(data[data$ONTOLOGY=="BP",][1:...,],data[data$ONTOLOGY=="CC",][1:...,],data[data$ONTOLOGY=="MF",][1:...,])
+  df1$Description<-factor(df1$Description,levels = rev(df1$Description))
+  
+  up_go<-ggplot(data = df1, aes(x = Count, y = Description,size = Count,  color = pvalue)) +
+    geom_point() + scale_color_gradient(low = "#e06663", high = "#3380bc") + theme_bw() + ylab("") + 
+    xlab("") + ggtitle("")
+  
+  up_go<-up_go+ facet_grid(ONTOLOGY~., scale="free")
+  
+  up_go<-up_go+ theme(
+    plot.title = element_text(color="Black", size=20, face="bold.italic"),
+    axis.title.x = element_text(color="Black", size=30, face="bold"),
+    axis.text.x = element_text(color="Black", size=20, face="bold"),
+    axis.text.y = element_text(color="Black", size=15, face="bold"),
+    axis.title.y = element_text(color="Black", size=30, face="bold"),
+    legend.text = element_text(color="Black", size=15, face="bold"),
+    legend.title = element_text(color="Black", size=15, face="bold"))
+  return(up_go)
+}
+
+KEGG <- function(x,...){
+  kk@result<- x@result[order(-x@result$Count),]
+  kk@result$Description <- factor(kk@result$Description,levels = rev(kk@result$Description))
+  
+  results<-ggplot(data =kk@result[1:...,] , aes(x = Count, y = Description,size = Count,  color = pvalue)) +
+    geom_point() + scale_color_gradient(low = "#e06663", high = "#3380bc") + theme_bw() + ylab("") + 
+    xlab("") + ggtitle("")
+  results<-results+ theme(plot.title = element_text(color="Black", size=20, face="bold.italic"),
+                          axis.title.x = element_text(color="Black", size=30, face="bold"),
+                          axis.text.x = element_text(color="Black", size=20, face="bold"),
+                          axis.text.y = element_text(color="Black", size=15, face="bold"),
+                          axis.title.y = element_text(color="Black", size=30, face="bold"),
+                          legend.text = element_text(color="Black", size=15, face="bold"),
+                          legend.title = element_text(color="Black", size=15, face="bold"))
+  return(results)
+}
+
+grid.arrange(GO(go,5),GO(go1,5),KEGG(kk,5),KEGG(kk1,5),nrow=2)
