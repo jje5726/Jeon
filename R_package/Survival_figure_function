@@ -14,8 +14,9 @@ LUAD_expression_df = LUAD_expression_df[,-1]
 LUAD_expression_df = as.data.frame(t(LUAD_expression_df))
 
 # gene list
-#### S1PR4, SFTPB, S1PR1, ST6GALNAC5, HPGD, UGT8, LCT, SMPDL3B
-gene_list=c("S1PR4", "SFTPB", "S1PR1", "ST6GALNAC5", "HPGD", "UGT8", "LCT", "SMPDL3B","B4GALNT1")
+#### 
+gene_list <- c("ASAH1","CERS6","CERS4","SPTLC1","CERS5",
+               "GBA1","GALC","CERS1","SPHK1","UGT8","SPTLC2")
 
 Surv_df=LUAD_expression_df[rownames(LUAD_expression_df) %in% gene_list,]
 Surv_df=as.data.frame(t(Surv_df))
@@ -103,3 +104,77 @@ combined_plot <- ggarrange(survplot_HPGD$plot, survplot_LCT$plot, survplot_S1PR1
                            survplot_S1PR4$plot, survplot_SFTPB$plot, survplot_SMPDL3B$plot,
                            survplot_ST6GALNAC5$plot, survplot_UGT8$plot, survplot_B4GALNT1$plot,
                            ncol = 3, nrow = 3)
+
+
+
+
+
+#########################################################################################################
+
+# 1) Tumor 샘플 ID (Primary + Recurrent)
+tumor_ids <- matched$sample_id[matched$sample_type %in% c("Primary Tumor", "Recurrent Tumor")]
+
+# 2) expr_symbol에서 해당 샘플만 추출
+expr_tumor <- expr_symbol[, substr(colnames(expr_symbol), 1, 16) %in% tumor_ids]
+
+# 3) 최종 확인
+sel_ids <- colnames(expr_tumor)
+table(clin$sample_type[clin$sample_id %in% sel_ids])
+
+
+
+library(survival)
+library(survminer)
+library(gridExtra)
+
+# 1) 사용할 유전자
+gene_list <- c("ASAH1", "B4GALNT1", "CERS6", "CERS4")
+
+# 2) 임상 정보 준비
+clin_os <- clin[, c("sample_id","os_time","os_event")]
+
+# 3) Tumor 샘플 (Primary + Recurrent)
+expr_tumor <- expr_symbol[, substr(colnames(expr_symbol), 1, 16) %in% tumor_ids]
+
+# 4) 각 유전자 Cutoff (CutoffFinder에서 확인한 값)
+cutoffs <- c(ASAH1=6172, B4GALNT1=135.5, CERS6=1829, CERS4=697.5)
+
+# 5) KM 플롯 저장용 리스트
+plots <- list()
+
+for (gene in gene_list) {
+  expr_vec <- expr_tumor[gene, ]
+  df <- data.frame(
+    sample_id = substr(colnames(expr_tumor), 1, 16),
+    expr = as.numeric(expr_vec)
+  )
+  colnames(df)[2] <- gene
+  
+  # 임상정보 merge
+  merged <- merge(clin_os, df, by="sample_id")
+  
+  # 그룹 나누기 (cutoff 기반)
+  merged$status <- ifelse(merged[[gene]] >= cutoffs[gene], "High", "Low")
+  
+  # Surv 객체
+  surv_obj <- Surv(time=merged$os_time, event=merged$os_event)
+  
+  # KM 적합
+  fit <- survfit(surv_obj ~ status, data=merged)
+  
+  # KM 플롯
+  plots[[gene]] <- ggsurvplot(
+    fit, 
+    data=merged,
+    conf.int=TRUE, pval=TRUE, risk.table=TRUE,
+    censor=FALSE,  # censoring point 표시 제거
+    legend.labs=c("High","Low"), legend.title=gene,
+    palette=c("orchid2","dodgerblue2"),
+    title=paste("Kaplan-Meier Curve for", gene)
+  )$plot
+}
+
+# 6) 2x2 패널 출력
+combined_plot <- grid.arrange(grobs=plots, ncol=2, nrow=2)
+
+
