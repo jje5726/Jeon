@@ -1,0 +1,422 @@
+
+
+library(TCGAbiolinks)
+library(maftools)
+library(data.table)
+#library(survival)
+library(dplyr)
+library(broom)
+
+## exp.rda 로드
+load("/home/jje5726/98/JJE/TCGA/exp.rda")
+
+colnames(colData(data))
+table(data$shortLetterCode)   # "TP"=Tumor, "NT"=Normal
+table(data$sample_type)       # "Primary Tumor", "Solid Tissue Normal"
+
+
+## tumor 541개 사용 
+tumor_only <- data[, data$sample_type %in% c("Primary Tumor", "Recurrent Tumor")]
+
+# 확인
+dim(tumor_only)
+table(tumor_only$sample_type)
+
+# 데이터프레임 
+expr <- assay(tumor_only)   # 유전자 x 샘플
+dim(expr)
+expr[1:5, 1:5]
+
+## 임상데이터
+clin <- as.data.frame(colData(tumor_only))
+dim(clin)
+head(clin[, c("patient","sample_type","ajcc_pathologic_stage",
+              "gender","age_at_diagnosis","vital_status","days_to_death")])
+
+
+
+# 기본값 NA 채우기 방지
+clin$os_time <- ifelse(!is.na(clin$days_to_death),
+                       clin$days_to_death,
+                       clin$paper_Survival)  # 혹시 다른 변수 있으면 보완
+
+clin$os_event <- ifelse(clin$vital_status == "Dead", 1, 0)
+
+## 임상정보확인 
+colnames(clin)
+
+## 스테이지 확인, 통합 
+unique(clin$ajcc_pathologic_stage)
+
+clin$stage_simple <- NA
+clin$stage_simple[grep("Stage I",   clin$ajcc_pathologic_stage)]   <- "I"
+clin$stage_simple[grep("Stage II",  clin$ajcc_pathologic_stage)]   <- "II"
+clin$stage_simple[grep("Stage III", clin$ajcc_pathologic_stage)]   <- "III"
+clin$stage_simple[grep("Stage IV",  clin$ajcc_pathologic_stage)]   <- "IV"
+
+clin$stage_simple <- factor(clin$stage_simple, levels=c("I","II","III","IV"))
+table(clin$stage_simple, useNA="ifany")
+
+## 나이
+clin$age_years <- clin$age_at_diagnosis / 365
+
+##사망자 생존자 확인 
+clin$os_time <- ifelse(!is.na(clin$days_to_death),
+                       clin$days_to_death,
+                       clin$paper_Survival)
+
+clin$os_event <- ifelse(clin$vital_status == "Dead", 1, 0)
+
+summary(clin$os_time)
+table(clin$os_event)
+
+## 1. 임상 변수 확인
+summary(clin$age_years)
+table(clin$gender, useNA = "ifany")
+table(clin$stage_simple, useNA = "ifany")
+
+## 2. 생존 변수 확인
+summary(clin$os_time)
+table(clin$os_event, useNA = "ifany")
+
+## 4. paper_* 요약 변수 확인
+grep("paper", colnames(clin), value=TRUE)
+
+## survival 정리
+clin$os_event_new <- ifelse(clin$vital_status == "Dead", 1, 0)
+clin$os_time_new  <- ifelse(!is.na(clin$days_to_death),
+                            clin$days_to_death,
+                            clin$paper_Survival)
+
+summary(clin$os_time_new)
+table(clin$os_event_new, useNA="ifany")
+# 기존 os_time 변수 요약
+summary(clin$os_time)
+
+
+## 유전자 발현값 
+# expr rownames가 ensembl ID라면 symbol 변환이 필요할 수 있음
+# 우선 symbol인지 확인
+head(rownames(expr))
+head(rowData(tumor_only))
+colnames(rowData(tumor_only))
+
+# 1. Ensembl → Symbol로 rownames 교체
+expr_symbol <- expr
+rownames(expr_symbol) <- rowData(tumor_only)$gene_name
+
+# 2. 중복된 심볼 제거 (첫 번째만 남기기)
+expr_symbol <- expr_symbol[!duplicated(rownames(expr_symbol)), ]
+
+# 3. 필요한 유전자 추출
+genes <- c("B4GALNT1","CERS4")
+expr_sub <- t(expr_symbol[genes, ])
+head(expr_sub)
+
+# 4. clin과 merge (sample 기준)
+clin <- cbind(clin, expr_sub[rownames(clin), ])
+
+# 5. cutoff로 그룹 나누기
+clin$B4GALNT1_group <- ifelse(clin$B4GALNT1 >= 135.5, "High", "Low")
+clin$CERS4_group    <- ifelse(clin$CERS4    >= 697.5, "High", "Low")
+
+# 확인
+table(clin$B4GALNT1_group, useNA="ifany")
+table(clin$CERS4_group, useNA="ifany")
+
+
+### MAF 다운 EGFR/ALK/BRAF/KRAS 확인 
+# 임상에는 어떤게 있는지 먼저 확인
+table(clin$paper_Oncogene.Negative.or.Positive.Groups, useNA="ifany")
+table(clin$paper_Fusions, useNA="ifany")
+
+
+# 1) TCGA-LUAD MAF 쿼리
+query_maf <- GDCquery(
+  project = "TCGA-LUAD",
+  data.category = "Simple Nucleotide Variation",
+  data.type = "Masked Somatic Mutation",
+  workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+GDCdownload(query_maf, method = "api", files.per.chunk = 100, directory = "/home/jje5726/98/JJE/TCGA/GDCdata")
+maf_data <- GDCprepare(query_maf, directory = "/home/jje5726/98/JJE/TCGA/GDCdata")
+
+### 파일 확인 
+list.dirs("TCGA-LUAD/Simple_Nucleotide_Variation", recursive = FALSE)
+list.files("TCGA-LUAD/Simple_Nucleotide_Variation/Masked_Somatic_Mutation", recursive = TRUE)[1:20]
+
+length(list.files("TCGA-LUAD/Simple_Nucleotide_Variation/Masked_Somatic_Mutation", 
+                  pattern = "maf.gz$", recursive = TRUE))
+files <- list.files("TCGA-LUAD/Simple_Nucleotide_Variation/Masked_Somatic_Mutation", 
+                    pattern = "maf.gz$", recursive = TRUE, full.names = TRUE)
+summary(file.size(files))
+
+lines <- readLines(files[1], n = 20)
+lines
+
+
+##
+#618개 MAF 병합
+maf_df <- data.table::rbindlist(
+  lapply(files, function(f) data.table::fread(f, sep="\t", header=TRUE, quote="")),
+  fill = TRUE
+)
+
+## tumor샘플만
+tumor_samples <- rownames(clin)   # 541개 샘플 (Primary + Recurrent)
+substr(tumor_samples[1], 1, 16)   # 바코드 길이 확인
+
+colnames(maf_df)[1:20]  # 먼저 확인
+table(substr(maf_df$Tumor_Sample_Barcode, 1, 16) %in% substr(tumor_samples, 1, 16))
+
+# 541개 tumor 샘플만 필터링
+maf_df_filtered <- maf_df[substr(maf_df$Tumor_Sample_Barcode, 1, 16) %in% substr(tumor_samples, 1, 16), ]
+
+# maftools 객체로 변환
+maf_tumor <- read.maf(maf = maf_df_filtered)
+
+# EGFR/ALK/BRAF/KRAS 변이 요약
+genes_of_interest <- c("EGFR","ALK","BRAF","KRAS")
+subset_maf <- subsetMaf(maf_tumor, genes = genes_of_interest)
+getGeneSummary(subset_maf)
+
+
+
+## merge
+
+# clin과 maf 모두 16자리 sample_short 생성
+clin$sample_short <- substr(rownames(clin), 1, 16)
+maf_df_filtered$sample_short <- substr(maf_df_filtered$Tumor_Sample_Barcode, 1, 16)
+
+# 관심 유전자만 추출
+genes_of_interest <- c("EGFR","ALK","BRAF","KRAS")
+mut_status <- maf_df_filtered[maf_df_filtered$Hugo_Symbol %in% genes_of_interest,
+                              c("sample_short","Hugo_Symbol")]
+
+# wide-format 변환
+mut_matrix <- reshape2::dcast(mut_status, sample_short ~ Hugo_Symbol,
+                              fun.aggregate = length, value.var = "Hugo_Symbol")
+mut_matrix[,-1][mut_matrix[,-1] > 0] <- 1
+
+# clin과 병합 (16자리 기준)
+clin_with_mut <- merge(clin, mut_matrix, by = "sample_short", all.x = TRUE)
+
+# NA → 0 변환
+for(g in genes_of_interest){
+  clin_with_mut[[g]][is.na(clin_with_mut[[g]])] <- 0
+}
+
+
+## 한번 더 확인 
+nrow(clin_with_mut)                           # 541
+sapply(genes_of_interest, function(g) sum(clin_with_mut[[g]]))
+sapply(genes_of_interest, function(g) sum(is.na(clin_with_mut[[g]])))
+
+
+head(rownames(clin), 3)
+head(unique(maf_df_filtered$Tumor_Sample_Barcode), 3)
+
+table(clin_with_mut$EGFR)
+table(clin_with_mut$ALK)
+table(clin_with_mut$BRAF)
+table(clin_with_mut$KRAS)
+
+
+###### Univariate Cox
+# 변수 목록
+vars <- c("age_years", "gender", "stage_simple",
+          "B4GALNT1_group", "CERS4_group",
+          "EGFR","ALK","BRAF","KRAS")
+
+# Univariate Cox
+uni_results <- lapply(vars, function(v){
+  f <- as.formula(paste("Surv(os_time_new, os_event_new) ~", v))
+  cox <- coxph(f, data = clin_with_mut)
+  tidy(cox, exponentiate = TRUE, conf.int = TRUE)
+})
+
+# 결과 합치기
+uni_results <- do.call(rbind, uni_results)
+uni_results
+
+## reference 확인
+levels(factor(clin_with_mut$B4GALNT1_group))
+levels(factor(clin_with_mut$CERS4_group))
+levels(factor(clin_with_mut$stage_simple))
+levels(factor(clin_with_mut$gender))
+
+
+### 샘플 수 확인 
+vars <- c("age_years", "gender", "stage_simple",
+          "B4GALNT1_group", "CERS4_group",
+          "EGFR","ALK","BRAF","KRAS")
+
+sample_counts <- sapply(vars, function(v){
+  f <- as.formula(paste("Surv(os_time_new, os_event_new) ~", v))
+  cox <- coxph(f, data = clin_with_mut)
+  cox$n   # 샘플 수
+})
+
+sample_counts
+
+
+
+
+# 테이블/플롯
+uni_table <- uni_results %>%
+  mutate(HR_CI = sprintf("%.2f (%.2f–%.2f)", estimate, conf.low, conf.high),
+         p.value = signif(p.value, 3)) %>%
+  select(term, HR_CI, p.value)
+
+uni_table
+
+library(survival)
+library(broom)
+library(forestplot)
+
+## 1. 변수 목록
+vars <- c("age_years", "gender", "stage_simple",
+          "B4GALNT1_group", "CERS4_group",
+          "EGFR","ALK","BRAF","KRAS")
+
+# Univariate Cox 결과
+uni_results <- lapply(vars, function(v){
+  f <- as.formula(paste("Surv(os_time_new, os_event_new) ~", v))
+  cox <- coxph(f, data = clin_with_mut)
+  res <- tidy(cox, exponentiate = TRUE, conf.int = TRUE)
+  res
+})
+uni_results <- do.call(rbind, uni_results)
+
+# 유의성 별표
+uni_results$stars <- ifelse(uni_results$p.value < 0.001, "***",
+                            ifelse(uni_results$p.value < 0.01, "**",
+                                   ifelse(uni_results$p.value < 0.05, "*", "")))
+
+# 변수 이름 
+nice_names <- c(
+  "Age (years)",
+  "Gender (male)",
+  "Stage_II vs I",
+  "Stage_III vs I",
+  "Stage_IV vs I",
+  "B4GALNT1 (Low vs High)",
+  "CERS4 (Low vs High)",
+  "EGFR",
+  "ALK",
+  "BRAF",
+  "KRAS"
+)
+
+# 테이블 텍스트
+table_text <- rbind(
+  c("Variable", "HR (95% CI)", "p-value", "Sig"),
+  cbind(
+    Variable = nice_names,
+    HR_CI    = sprintf("%.2f (%.2f–%.2f)", uni_results$estimate, uni_results$conf.low, uni_results$conf.high),
+    p_value  = sprintf("%.3f", uni_results$p.value),
+    Sig      = uni_results$stars
+  )
+)
+
+# Forest plot
+forestplot(labeltext = table_text,
+           mean  = c(NA, uni_results$estimate),
+           lower = c(NA, uni_results$conf.low),
+           upper = c(NA, uni_results$conf.high),
+           zero  = 1,
+           boxsize = 0.2,
+           lineheight = unit(8, "mm"),
+           col = fpColors(box="royalblue", line="darkblue", zero="black"),
+           xlab = "Hazard Ratio (95% CI)",
+           title = "Univariate Cox Analysis")
+
+
+### Multivariate Cox
+
+multi_vars <- c("age_years", "gender", "stage_simple",
+                "B4GALNT1_group", "CERS4_group",
+                "EGFR","ALK","BRAF","KRAS")
+
+f_multi <- as.formula(
+  paste("Surv(os_time_new, os_event_new) ~",
+        paste(multi_vars, collapse = " + "))
+)
+
+cox_multi <- coxph(f_multi, data = clin_with_mut)
+
+# 결과 정리
+multi_results <- tidy(cox_multi, exponentiate = TRUE, conf.int = TRUE)
+multi_results
+
+
+### 플롯 
+
+# 유의성 별표
+multi_results$stars <- ifelse(multi_results$p.value < 0.001, "***",
+                              ifelse(multi_results$p.value < 0.01, "**",
+                                     ifelse(multi_results$p.value < 0.05, "*", "")))
+
+# 변수 이름
+nice_names_multi <- c(
+  "Age (years)",
+  "Gender (male)",
+  "Stage_II vs I",
+  "Stage_III vs I",
+  "Stage_IV vs I",
+  "B4GALNT1 (Low vs High)",
+  "CERS4 (Low vs High)",
+  "EGFR",
+  "ALK",
+  "BRAF",
+  "KRAS"
+)
+
+# 표 텍스트 
+table_text <- cbind(
+  c("Variable", nice_names_multi),
+  c("HR (95% CI)", sprintf("%.2f (%.2f–%.2f)",
+                           multi_results$estimate,
+                           multi_results$conf.low,
+                           multi_results$conf.high)),
+  c("p-value", sprintf("%.3f", multi_results$p.value)),
+  c("Sig", multi_results$stars)  
+)
+
+# Forest plot
+forestplot(labeltext = table_text,
+           mean  = c(NA, multi_results$estimate),
+           lower = c(NA, multi_results$conf.low),
+           upper = c(NA, multi_results$conf.high),
+           zero  = 1,
+           boxsize = 0.2,
+           lineheight = unit(8, "mm"),
+           col = fpColors(box="royalblue", line="darkblue", zero="black"),
+           xlab = "Hazard Ratio (95% CI)",
+           title = "Multivariate Cox Analysis")
+
+## 샘플수 확인
+multi_vars <- c("age_years", "gender", "stage_simple",
+                "B4GALNT1_group", "CERS4_group",
+                "EGFR","ALK","BRAF","KRAS")
+
+# 변수별 샘플 수 확인
+sample_counts <- sapply(multi_vars, function(v){
+  f <- as.formula(paste("Surv(os_time_new, os_event_new) ~", v))
+  cox <- coxph(f, data = clin_with_mut)
+  return(cox$n)
+})
+
+# multivariate 전체 샘플 수
+f_multi <- as.formula(
+  paste("Surv(os_time_new, os_event_new) ~", paste(multi_vars, collapse = " + "))
+)
+cox_multi <- coxph(f_multi, data = clin_with_mut)
+
+sample_counts
+cox_multi$n
+
+
+
+       
