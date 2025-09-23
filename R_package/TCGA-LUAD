@@ -1,48 +1,51 @@
 
-### TCGA 데이터 다운로드(TCGA_LUAD)
+### TCGA data(TCGA_LUAD)
 
-query.exp.hg38 <- GDCquery(             ##TCGA LUAD 프로젝트 유전자 발현 데이터 쿼리
+query.exp.hg38 <- GDCquery(             ##TCGA LUAD project
   project = "TCGA-LUAD", 
   data.category = "Transcriptome Profiling", 
   data.type = "Gene Expression Quantification", 
-  workflow.type = "STAR - Counts")        ##STAR - Counts 방식으로 유전자 발현 수치 얻음
+  workflow.type = "STAR - Counts")        ##STAR - Counts 
 
-GDCdownload(query.exp.hg38)            ##쿼리한 데이터 다운로드
+GDCdownload(query.exp.hg38)            ##
 
-expdat <- GDCprepare(                  ##다운로드한 데이터 준비, exp.rda 파일로 저장
+expdat <- GDCprepare(                  ## exp.rda 
   query = query.exp.hg38,
   save = TRUE, 
   save.filename = "exp.rda"
 )
 
-data <- GDCprepare(query = query.exp.hg38)     ##데이터준비작업수행, 데이터셋을 data객체에 저장
+data <- GDCprepare(query = query.exp.hg38)     ##
 
 
 
 
-### 임상 데이터 
+### clinical data
 datatable(
-  as.data.frame(colData(data)),   ##DT 패키지를 사용하여 R의 데이터 프레임을 HTML 테이블로 변환
-  options = list(scrollX = TRUE, keys = TRUE, pageLength = 5),  ##테이블옵션 설정, 
+  as.data.frame(colData(data)),   ##DT >>HTML table
+  options = list(scrollX = TRUE, keys = TRUE, pageLength = 5),  ##table, 
   rownames = FALSE
 )
 
-### 발현값 데이터 
+### expr data 
 datatable(
-  assay(data)[1:20,],            ##data의 유전자 발현값 테이블로 표시, 첫20개유전자데이터만 포함
+  assay(data)[1:20,],            
   options = list(scrollX = TRUE, keys = TRUE, pageLength = 5), 
   rownames = TRUE
 )
 
-row_df=as.data.frame(rowData(data)) #유전자 정보 ##유전자 정보가 행으로 정렬, 열은 유전자정보 종류
-col_df=as.data.frame(colData(data)) #환자 임상정보 
-LUAD_expression <- assay(data) # data에서 발현값 추출해서 LUAD_expression 매트릭스형태에 저장
-LUAD_expression <- as.data.frame(LUAD_expression)  ## 발현 값을 데이터 프레임으로 변환
-LUAD_expression$ENSEMBL <- rownames(LUAD_expression) ##앙상블열 추가하고 여기에 ENSEMBL ID저장.
-row_df$ENSEMBL <-rownames(row_df) ##유전자 정보 데이터에도 위와동일
-row_df <- row_df[,c(7,11)] #유전자 정보에서 gene symbol, 앙상블 아이디 추출 
-LUAD_expression_df=merge(LUAD_expression,row_df,by='ENSEMBL') #앙상블 열 기준으로 데이터 프레임 병합
-LUAD_expression_df=LUAD_expression_df[,-1] #앙상블 열 삭제 (앙상블 열은 첫 번째 열)
-LUAD_expression_df=aggregate(. ~ gene_name, data = LUAD_expression_df, mean) # 유전자 이름 기준으로 중복되는 유전자 발현값 평균값으로 치환 
-rownames(LUAD_expression_df)<-LUAD_expression_df$gene_name # 행 이름 유전자 이름으로 변경 
-LUAD_expression_df=LUAD_expression_df[,-1] # 유전자 이름 열 삭제, LUAD 최종 유전자 발현값 데이터
+row_df=as.data.frame(rowData(data)) 
+col_df=as.data.frame(colData(data)) 
+LUAD_expression <- assay(data) 
+LUAD_expression <- as.data.frame(LUAD_expression)  
+LUAD_expression$ENSEMBL <- rownames(LUAD_expression) 
+row_df$ENSEMBL <-rownames(row_df) 
+row_df <- row_df[,c(7,11)] 
+LUAD_expression_df=merge(LUAD_expression,row_df,by='ENSEMBL') 
+LUAD_expression_df=LUAD_expression_df[,-1] 
+LUAD_expression_df=aggregate(. ~ gene_name, data = LUAD_expression_df, mean)  
+rownames(LUAD_expression_df)<-LUAD_expression_df$gene_name  
+LUAD_expression_df=LUAD_expression_df[,-1] 
+
+
+
