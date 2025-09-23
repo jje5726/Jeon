@@ -1,0 +1,329 @@
+
+
+
+############# gse72094
+
+# 
+library(GEOquery)
+library(limma)
+library(survival)
+library(survminer)
+library(dplyr)
+
+
+## gse72094 
+url <- "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE72nnn/GSE72094/matrix/GSE72094_series_matrix.txt.gz"
+dest <- "GSE72094_series_matrix.txt.gz"
+download.file(url, dest, method = "wget")   # wget
+gset <- getGEO(filename = dest)
+
+
+# ExpressionSet 
+gset
+
+# 
+ex <- exprs(gset)
+dim(ex)             # [gene x sample]
+ex[1:5, 1:5]        # 
+
+# clinical
+pheno <- pData(gset)
+dim(pheno)          # 
+colnames(pheno)[1:20]  # 
+head(pheno[, 1:10])    # 
+
+colnames(pheno)
+
+### expr
+fvarLabels(gset)      # 
+head(fData(gset))     # probe annotation 
+
+# B4GALNT1, CERS4 probe 
+b4_idx   <- which(fData(gset)$GeneSymbol == "B4GALNT1")
+cers4_idx <- which(fData(gset)$GeneSymbol == "CERS4")
+
+b4_idx
+cers4_idx
+
+# ExpressionSet ### gse 
+gset_gse72094 <- gset
+
+#
+ex_gse72094 <- exprs(gset_gse72094)
+
+# 
+pheno_gse72094 <- pData(gset_gse72094)
+
+# featureData (probe ↔ gene symbol )
+fdata_gse72094 <- fData(gset_gse72094)
+
+# probe ID
+b4_idx_gse72094   <- which(fdata_gse72094$GeneSymbol == "B4GALNT1")
+cers4_idx_gse72094 <- which(fdata_gse72094$GeneSymbol == "CERS4")
+
+b4_idx_gse72094
+cers4_idx_gse72094
+
+
+# B4GALNT1: probe 3 → mean
+b4_expr_gse72094 <- colMeans(ex_gse72094[b4_idx_gse72094, , drop = FALSE])
+
+# CERS4: probe 1
+cers4_expr_gse72094 <- ex_gse72094[cers4_idx_gse72094, ]
+
+# data frame
+gene_expr_gse72094 <- data.frame(
+  sample = colnames(ex_gse72094),
+  B4GALNT1 = as.numeric(b4_expr_gse72094),
+  CERS4 = as.numeric(cers4_expr_gse72094)
+)
+
+head(gene_expr_gse72094)
+summary(as.numeric(ex_gse72094))
+
+####  cutoff finder >> tsv file
+# surv
+surv_info_gse72094 <- pheno_gse72094[, c("survival_time_in_days:ch1", "vital_status:ch1")]
+
+# vital_status  ("Dead"=1, "Alive"=0)
+surv_info_gse72094$OS_event <- ifelse(surv_info_gse72094$`vital_status:ch1` == "Dead", 1, 0)
+surv_info_gse72094$OS_time  <- as.numeric(surv_info_gse72094$`survival_time_in_days:ch1`)
+
+# B4GALNT1 
+cutoff_input_b4_gse72094 <- data.frame(
+  sample = gene_expr_gse72094$sample,
+  expression = gene_expr_gse72094$B4GALNT1,
+  OS_time = surv_info_gse72094$OS_time,
+  OS_event = surv_info_gse72094$OS_event
+)
+
+# TSV 
+write.table(cutoff_input_b4_gse72094,
+            file = "cutofffinder_input_B4GALNT1_gse72094.tsv",
+            sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+### cers4
+cutoff_input_CERS4_gse72094 <- data.frame(
+  sample = gene_expr_gse72094$sample,
+  expression = gene_expr_gse72094$CERS4,
+  OS_time = as.numeric(pheno_gse72094$`survival_time_in_days:ch1`),
+  OS_event = ifelse(pheno_gse72094$`vital_status:ch1` == "Dead", 1, 0)
+)
+
+write.table(cutoff_input_CERS4_gse72094,
+            file = "cutofffinder_input_CERS4_gse72094.tsv",
+            sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+#### KM (cutoff finder)
+
+library(survival)
+library(survminer)
+library(gridExtra)
+
+# cutoff 
+cutoffs_gse72094 <- c(B4GALNT1 = 4.77, CERS4 = 5.074)
+
+# expression ( gene_expr_gse72094 )
+expr_tumor_gse72094 <- t(as.matrix(gene_expr_gse72094[, c("B4GALNT1", "CERS4")]))
+colnames(expr_tumor_gse72094) <- gene_expr_gse72094$sample
+
+# clinical data 
+clin_os_gse72094 <- data.frame(
+  sample_id = rownames(pheno_gse72094),
+  os_time   = as.numeric(pheno_gse72094$`survival_time_in_days:ch1`),
+  os_event  = ifelse(pheno_gse72094$`vital_status:ch1` == "Dead", 1, 0)
+)
+
+
+# gene list 
+gene_list_gse72094 <- c("B4GALNT1", "CERS4")
+
+plots_gse72094 <- list()
+
+for (gene in gene_list_gse72094) {
+  expr_vec <- expr_tumor_gse72094[gene, ]
+  df <- data.frame(
+    sample_id = substr(colnames(expr_tumor_gse72094), 1, 16),
+    expr = as.numeric(expr_vec)
+  )
+  colnames(df)[2] <- gene
+  
+  # clin merge
+  merged <- merge(clin_os_gse72094, df, by="sample_id")
+  
+  # group (cutoff)
+  merged$status <- ifelse(merged[[gene]] >= cutoffs_gse72094[gene], "High", "Low")
+  
+  # Surv object
+  surv_obj <- Surv(time = merged$os_time, event = merged$os_event)
+  
+  # KM fit
+  fit <- survfit(surv_obj ~ status, data = merged)
+  
+  # KM plot 
+  plots_gse72094[[gene]] <- ggsurvplot(
+    fit,
+    data = merged,
+    conf.int = TRUE, pval = TRUE, risk.table = TRUE,
+    censor = FALSE,  # censoring point 제거
+    legend.labs = c("High","Low"), legend.title = gene,
+    palette = c("orchid2","dodgerblue2"),
+    title = paste("Kaplan-Meier Curve for", gene, "(GSE72094)"),
+  )$plot +
+    theme(plot.title = element_text(size = 14))  # size
+}
+
+# 2x2 grid 
+combined_plot_gse72094 <- grid.arrange(grobs = plots_gse72094, ncol = 2, nrow = 1)
+
+
+
+############ regression 
+# 
+required_cols <- c("survival_time_in_days:ch1", "vital_status:ch1",
+                   "age_at_diagnosis:ch1", "gender:ch1", "Stage:ch1",
+                   "egfr_status:ch1", "kras_status:ch1", "tp53_status:ch1")
+
+required_cols %in% colnames(pheno_gse72094)
+head(pheno_gse72094[, required_cols])
+
+## Survival
+clin_gse72094 <- pheno_gse72094
+
+# OS event/time
+clin_gse72094$os_event_new <- ifelse(clin_gse72094$`vital_status:ch1` == "Dead", 1, 0)
+clin_gse72094$os_time_new  <- as.numeric(clin_gse72094$`survival_time_in_days:ch1`)
+
+
+# Stage
+clin_gse72094$stage_simple <- NA
+clin_gse72094$stage_simple[grep("^1", clin_gse72094$`Stage:ch1`)] <- "I"
+clin_gse72094$stage_simple[grep("^2", clin_gse72094$`Stage:ch1`)] <- "II"
+clin_gse72094$stage_simple[grep("^3", clin_gse72094$`Stage:ch1`)] <- "III"
+clin_gse72094$stage_simple[grep("^4", clin_gse72094$`Stage:ch1`)] <- "IV"
+clin_gse72094$stage_simple <- factor(clin_gse72094$stage_simple, levels=c("I","II","III","IV"))
+
+
+# Age
+clin_gse72094$age_years <- as.numeric(clin_gse72094$`age_at_diagnosis:ch1`)
+
+# Gene expression (B4GALNT1, CERS4)
+clin_gse72094$B4GALNT1 <- gene_expr_gse72094$B4GALNT1
+clin_gse72094$CERS4    <- gene_expr_gse72094$CERS4
+
+# group (cutoff )
+clin_gse72094$B4GALNT1_group <- ifelse(clin_gse72094$B4GALNT1 >= 4.77, "High", "Low")
+clin_gse72094$CERS4_group    <- ifelse(clin_gse72094$CERS4    >= 5.074, "High", "Low")
+
+
+# mutation status
+clin_gse72094$EGFR_mut_status <- ifelse(clin_gse72094$`egfr_status:ch1` == "Mut", 1, 0)
+clin_gse72094$KRAS_mut_status <- ifelse(clin_gse72094$`kras_status:ch1` == "Mut", 1, 0)
+clin_gse72094$TP53_mut_status <- ifelse(clin_gse72094$`tp53_status:ch1` == "Mut", 1, 0)
+
+head(clin_gse72094[, c("os_time_new","os_event_new","age_years","gender:ch1",
+                       "stage_simple","B4GALNT1","CERS4",
+                       "B4GALNT1_group","CERS4_group",
+                       "EGFR_mut_status","KRAS_mut_status","TP53_mut_status")])
+
+
+## 
+nrow(clin_gse72094)
+sum(!is.na(clin_gse72094$os_time_new) & !is.na(clin_gse72094$os_event_new))
+complete.cases(clin_gse72094[, c("os_time_new","os_event_new","age_years",
+                                 "gender:ch1","stage_simple",
+                                 "EGFR_mut_status","KRAS_mut_status","TP53_mut_status")]) %>% sum()
+
+
+## univariate
+library(survival)
+library(broom)
+library(dplyr)
+
+
+# 
+clin_gse72094 <- clin_gse72094 %>%
+  rename(
+    gender = `gender:ch1`,
+    stage = stage_simple
+  )
+
+vars_gse72094 <- c("age_years", "gender", "stage",
+                   "B4GALNT1_group", "CERS4_group",
+                   "EGFR_mut_status", "KRAS_mut_status", "TP53_mut_status")
+
+
+
+uni_results_gse72094 <- lapply(vars_gse72094, function(v){
+  f <- as.formula(paste("Surv(os_time_new, os_event_new) ~", v))
+  cox <- coxph(f, data = clin_gse72094)
+  tidy(cox, exponentiate = TRUE, conf.int = TRUE)
+}) %>% bind_rows()
+
+uni_results_gse72094
+
+### multivariate
+# Multivariate Cox
+multi_vars_gse72094 <- vars_gse72094
+f_multi_gse72094 <- as.formula(paste("Surv(os_time_new, os_event_new) ~", 
+                                     paste(multi_vars_gse72094, collapse=" + ")))
+
+cox_multi_gse72094 <- coxph(f_multi_gse72094, data=clin_gse72094)
+multi_results_gse72094 <- tidy(cox_multi_gse72094, exponentiate=TRUE, conf.int=TRUE)
+
+multi_results_gse72094
+
+
+## plot
+# Univariate
+uni_results_gse72094$stars <- ifelse(uni_results_gse72094$p.value < 0.001, "***",
+                                     ifelse(uni_results_gse72094$p.value < 0.01, "**",
+                                            ifelse(uni_results_gse72094$p.value < 0.05, "*", "")))
+
+# Multivariate
+multi_results_gse72094$stars <- ifelse(multi_results_gse72094$p.value < 0.001, "***",
+                                       ifelse(multi_results_gse72094$p.value < 0.01, "**",
+                                              ifelse(multi_results_gse72094$p.value < 0.05, "*", "")))
+
+nice_names_gse72094 <- c("Age (years)", "Gender (male)",
+                         "Stage II vs I", "Stage III vs I", "Stage IV vs I",
+                         "B4GALNT1 (Low vs High)", "CERS4 (Low vs High)",
+                         "EGFR mutation", "KRAS mutation", "TP53 mutation")
+
+
+library(forestplot)
+
+table_text_uni_gse72094 <- rbind(
+  c("Variable", "HR (95% CI)", "p-value", "Sig"),
+  cbind(Variable = nice_names_gse72094,
+        HR_CI = sprintf("%.2f (%.2f–%.2f)", uni_results_gse72094$estimate, uni_results_gse72094$conf.low, uni_results_gse72094$conf.high),
+        p_value = sprintf("%.3f", uni_results_gse72094$p.value),
+        Sig = uni_results_gse72094$stars)
+)
+
+forestplot(labeltext = table_text_uni_gse72094,
+           mean  = c(NA, uni_results_gse72094$estimate),
+           lower = c(NA, uni_results_gse72094$conf.low),
+           upper = c(NA, uni_results_gse72094$conf.high),
+           zero = 1, boxsize = 0.2, xlab = "Hazard Ratio (95% CI)",
+           title = "Univariate Cox Analysis (GSE72094)",
+           col = fpColors(box="royalblue", line="royalblue", zero="black"))
+
+
+## multi
+table_text_multi_gse72094 <- cbind(
+  c("Variable", nice_names_gse72094),
+  c("HR (95% CI)", sprintf("%.2f (%.2f–%.2f)", multi_results_gse72094$estimate, multi_results_gse72094$conf.low, multi_results_gse72094$conf.high)),
+  c("p-value", sprintf("%.3f", multi_results_gse72094$p.value)),
+  c("Sig", multi_results_gse72094$stars)
+)
+
+forestplot(labeltext = table_text_multi_gse72094,
+           mean  = c(NA, multi_results_gse72094$estimate),
+           lower = c(NA, multi_results_gse72094$conf.low),
+           upper = c(NA, multi_results_gse72094$conf.high),
+           zero = 1, boxsize = 0.2, xlab = "Hazard Ratio (95% CI)",
+           title = "Multivariate Cox Analysis (GSE72094)",
+           col = fpColors(box="royalblue", line="royalblue", zero="black"))
