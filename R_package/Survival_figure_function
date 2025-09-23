@@ -1,145 +1,30 @@
-install.packages('survminer')
 
+############# cutoff finder (https://molpathoheidelberg.shinyapps.io/CutoffFinder_v1/)
 library(survival)
 library(survminer)
 library(dplyr)
-library(vctrs)
-library(survminer)
 library(ggplot2)
-
-##   
-
-rownames(LUAD_expression_df) <-LUAD_expression_df$Gene
-LUAD_expression_df = LUAD_expression_df[,-1]
-LUAD_expression_df = as.data.frame(t(LUAD_expression_df))
-
-# gene list
-#### 
-gene_list <- c("ASAH1","CERS6","CERS4","SPTLC1","CERS5",
-               "GBA1","GALC","CERS1","SPHK1","UGT8","SPTLC2")
-
-Surv_df=LUAD_expression_df[rownames(LUAD_expression_df) %in% gene_list,]
-Surv_df=as.data.frame(t(Surv_df))
-Surv_df$barcode=rownames(Surv_df)
-
-
-clinical_df=col_df[,c("barcode","days_to_death","days_to_last_follow_up","vital_status")]
-
-Surv_df=merge(Surv_df,clinical_df,by='barcode')
-Surv_df$Survival_status <- ifelse(Surv_df$vital_status=="Alive",0,1)
-
-Surv_df$HPGD_status <- ifelse(Surv_df$HPGD>=895,"High","Low")
-Surv_df$LCT_status <- ifelse(Surv_df$LCT>=31.5,"High","Low")
-Surv_df$S1PR1_status <- ifelse(Surv_df$S1PR1>=246,"High","Low")
-Surv_df$S1PR4_status <- ifelse(Surv_df$S1PR4>=208,"High","Low")
-Surv_df$SFTPB_status <- ifelse(Surv_df$SFTPB>=746100,"High","Low")
-Surv_df$SMPDL3B_status <- ifelse(Surv_df$SMPDL3B>=2866,"High","Low")
-Surv_df$ST6GALNAC5_status <- ifelse(Surv_df$ST6GALNAC5>=109,"High","Low")
-Surv_df$UGT8_status <- ifelse(Surv_df$UGT8>=21,"High","Low")
-Surv_df$B4GALNT1=ifelse(Surv_df$B4GALNT1 >= 135.5,"High","Low")
-
-write.csv(Surv_df,file='~/raw_data1/kang/Kim/Lung_surv.csv')
-
-### 
-#HPGD, 895
-#LCT, 31.5
-#S1PR1, 246
-#S1PR4, 208
-#SFTPB, 746100
-#SMPDL3B, 2866
-#ST6GALNAC5, 109
-#UGT8, 21 
-
-surv_object <- Surv(time=Surv_df$days_to_death, event=Surv_df$Survival_status)
-
-fit1 <- survfit(surv_object ~ UGT8_status, data=Surv_df)
-
-survplot_HPGD<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
-           legend.labs=c("High", "Low"), legend.title="HPGD",  
-           palette=c("orchid2", "dodgerblue2"), 
-           title="Kaplan-Meier Curve for HPGD")
-
-survplot_LCT<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
-                          legend.labs=c("High", "Low"), legend.title="LCT",  
-                          palette=c("orchid2", "dodgerblue2"), 
-                         title="Kaplan-Meier Curve for LCT")
-
-survplot_S1PR1<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
-                         legend.labs=c("High", "Low"), legend.title="S1PR1",  
-                         palette=c("orchid2", "dodgerblue2"), 
-                         title="Kaplan-Meier Curve for S1PR1")
-
-survplot_S1PR4<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
-                           legend.labs=c("High", "Low"), legend.title="S1PR4",  
-                           palette=c("orchid2", "dodgerblue2"), 
-                           title="Kaplan-Meier Curve for S1PR4")
-
-survplot_SFTPB<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
-                           legend.labs=c("High", "Low"), legend.title="SFTPB",  
-                           palette=c("orchid2", "dodgerblue2"), 
-                           title="Kaplan-Meier Curve for SFTPB")
-
-survplot_SMPDL3B<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
-                           legend.labs=c("High", "Low"), legend.title="SMPDL3B",  
-                           palette=c("orchid2", "dodgerblue2"), 
-                           title="Kaplan-Meier Curve for SMPDL3B")
-
-survplot_ST6GALNAC5<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
-                             legend.labs=c("High", "Low"), legend.title="ST6GALNAC5",  
-                             palette=c("orchid2", "dodgerblue2"), 
-                             title="Kaplan-Meier Curve for ST6GALNAC5")
-
-survplot_UGT8<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
-                                legend.labs=c("High", "Low"), legend.title="UGT8",  
-                                palette=c("orchid2", "dodgerblue2"), 
-                          title="Kaplan-Meier Curve for UGT8")
-
-survplot_B4GALNT1<-ggsurvplot(fit1, conf.int=TRUE, pval=TRUE, risk.table=TRUE, 
-                          legend.labs=c("High", "Low"), legend.title="B4GALNT1",  
-                          palette=c("orchid2", "dodgerblue2"), 
-                          title="Kaplan-Meier Curve for B4GALNT1")
-
-
-combined_plot <- ggarrange(survplot_HPGD$plot, survplot_LCT$plot, survplot_S1PR1$plot,
-                           survplot_S1PR4$plot, survplot_SFTPB$plot, survplot_SMPDL3B$plot,
-                           survplot_ST6GALNAC5$plot, survplot_UGT8$plot, survplot_B4GALNT1$plot,
-                           ncol = 3, nrow = 3)
-
-
-
-
-
-#########################################################################################################
-
-# 1) Tumor 샘플 ID (Primary + Recurrent)
-tumor_ids <- matched$sample_id[matched$sample_type %in% c("Primary Tumor", "Recurrent Tumor")]
-
-# 2) expr_symbol에서 해당 샘플만 추출
-expr_tumor <- expr_symbol[, substr(colnames(expr_symbol), 1, 16) %in% tumor_ids]
-
-# 3) 최종 확인
-sel_ids <- colnames(expr_tumor)
-table(clin$sample_type[clin$sample_id %in% sel_ids])
-
-
-
-library(survival)
-library(survminer)
 library(gridExtra)
 
-# 1) 사용할 유전자
-gene_list <- c("ASAH1", "B4GALNT1", "CERS6", "CERS4")
+# 1) gene list
+gene_list <- c("ASAH1","B4GALNT1","CERS6","CERS4","SPTLC1",
+               "CERS5","GBA","GALC","CERS1","SPHK1","UGT8","SPTLC2")
 
-# 2) 임상 정보 준비
-clin_os <- clin[, c("sample_id","os_time","os_event")]
-
-# 3) Tumor 샘플 (Primary + Recurrent)
+# 2) Tumor sample
+tumor_ids <- matched$sample_id[matched$sample_type %in% c("Primary Tumor", "Recurrent Tumor")]
 expr_tumor <- expr_symbol[, substr(colnames(expr_symbol), 1, 16) %in% tumor_ids]
 
-# 4) 각 유전자 Cutoff (CutoffFinder에서 확인한 값)
-cutoffs <- c(ASAH1=6172, B4GALNT1=135.5, CERS6=1829, CERS4=697.5)
+# 3) clinical data
+clin_os <- clin[, c("sample_id","os_time","os_event")]
 
-# 5) KM 플롯 저장용 리스트
+# 4) CutoffFinder >> cutoff 
+cutoffs <- c(
+  ASAH1=6172, B4GALNT1=135.5, CERS6=1829, CERS4=697.5,
+  SPTLC1=6516, CERS5=1065, GBA=2519, GALC=3938,
+  CERS1=62.5, SPHK1=2616, UGT8=1128, SPTLC2=9071
+)
+
+# 5) KM plot
 plots <- list()
 
 for (gene in gene_list) {
@@ -150,19 +35,90 @@ for (gene in gene_list) {
   )
   colnames(df)[2] <- gene
   
-  # 임상정보 merge
+  # clin merge
   merged <- merge(clin_os, df, by="sample_id")
   
-  # 그룹 나누기 (cutoff 기반)
+  # group (cutoff )
   merged$status <- ifelse(merged[[gene]] >= cutoffs[gene], "High", "Low")
   
-  # Surv 객체
+  # Surv 
   surv_obj <- Surv(time=merged$os_time, event=merged$os_event)
   
-  # KM 적합
+  # KM 
   fit <- survfit(surv_obj ~ status, data=merged)
   
-  # KM 플롯
+  # KM 
+  plots[[gene]] <- ggsurvplot(
+    fit, 
+    data=merged,
+    conf.int=TRUE, pval=TRUE, risk.table=TRUE,
+    censor=FALSE,  # censoring point 제거
+    legend.labs=c("High","Low"), legend.title=gene,
+    palette=c("orchid2","dodgerblue2"),
+    title=paste("Kaplan-Meier Curve for", gene)
+  )$plot
+}
+
+# 6) print (3x4)
+combined_plot <- grid.arrange(grobs=plots, ncol=3, nrow=4)
+
+
+
+
+
+#########################################################################################################
+
+# 1) Tumor sample ID (Primary + Recurrent)
+tumor_ids <- matched$sample_id[matched$sample_type %in% c("Primary Tumor", "Recurrent Tumor")]
+
+# 2) expr_symbol
+expr_tumor <- expr_symbol[, substr(colnames(expr_symbol), 1, 16) %in% tumor_ids]
+#
+sel_ids <- colnames(expr_tumor)
+table(clin$sample_type[clin$sample_id %in% sel_ids])
+
+
+
+library(survival)
+library(survminer)
+library(gridExtra)
+
+# 1) 4 Sig genes
+gene_list <- c("ASAH1", "B4GALNT1", "CERS6", "CERS4")
+
+# 2) clinical data
+clin_os <- clin[, c("sample_id","os_time","os_event")]
+
+# 3) Tumor  (Primary + Recurrent)
+expr_tumor <- expr_symbol[, substr(colnames(expr_symbol), 1, 16) %in% tumor_ids]
+
+# 4)  Cutoff (CutoffFinder)
+cutoffs <- c(ASAH1=6172, B4GALNT1=135.5, CERS6=1829, CERS4=697.5)
+
+# 5) KM plot list
+plots <- list()
+
+for (gene in gene_list) {
+  expr_vec <- expr_tumor[gene, ]
+  df <- data.frame(
+    sample_id = substr(colnames(expr_tumor), 1, 16),
+    expr = as.numeric(expr_vec)
+  )
+  colnames(df)[2] <- gene
+  
+  # clin merge
+  merged <- merge(clin_os, df, by="sample_id")
+  
+  # group (cutoff)
+  merged$status <- ifelse(merged[[gene]] >= cutoffs[gene], "High", "Low")
+  
+  # Surv 
+  surv_obj <- Surv(time=merged$os_time, event=merged$os_event)
+  
+  # KM 
+  fit <- survfit(surv_obj ~ status, data=merged)
+  
+  # KM 
   plots[[gene]] <- ggsurvplot(
     fit, 
     data=merged,
@@ -174,7 +130,7 @@ for (gene in gene_list) {
   )$plot
 }
 
-# 6) 2x2 패널 출력
+# 6) 2x2 plot
 combined_plot <- grid.arrange(grobs=plots, ncol=2, nrow=2)
 
 
