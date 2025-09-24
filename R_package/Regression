@@ -1,77 +1,64 @@
+# ================================
+# 0. 
+# ================================
+library(dplyr)
+library(stringr)
+library(survival)
+library(broom)
+library(forestplot)
+library(maftools)
 
-## Expression data load
-# Expression + Clinical
+# ================================
+# 1. 
+# ================================
+# exp.rda (expression + clinical)
 load("/home/jje5726/98/JJE/TCGA/exp.rda")   # data 
-tumor_only <- data[, data$sample_type %in% c("Primary Tumor", "Recurrent Tumor")]
 
-# Expression matrix (genes x samples)
-expr <- assay(tumor_only)
+# maf_tumor (TCGA-LUAD  MAF )
+maf_tumor <- readRDS("/home/jje5726/98/JJE/TCGA/GDCdata/maf_tumor.rds")
+
+# expr_symbol 
+expr <- assay(data)
 expr_symbol <- expr
-rownames(expr_symbol) <- rowData(tumor_only)$gene_name
-expr_symbol <- expr_symbol[!duplicated(rownames(expr_symbol)), ]   # gene 
+rownames(expr_symbol) <- rowData(data)$gene_name
+expr_symbol <- expr_symbol[!duplicated(rownames(expr_symbol)), ]
 
-# Clinical data
-clin <- as.data.frame(colData(tumor_only))
+# clin 
+clin <- as.data.frame(colData(data))
 
+# ================================
+# 2. 
+# ================================
+genes <- c("B4GALNT1", "CERS4")
+expr_sub <- t(expr_symbol[genes, ])
+clin <- cbind(clin, expr_sub[rownames(clin), ])
 
-## clinical data
+# group
+clin$B4GALNT1_group <- ifelse(clin$B4GALNT1 >= 135.5, "High", "Low")
+clin$CERS4_group    <- ifelse(clin$CERS4    >= 697.5, "High", "Low")
 
-# Survival variables
+# clin
+clin$Tumor_Sample_Barcode <- substr(rownames(clin), 1, 19)
+clin$age_years   <- clin$age_at_diagnosis / 365
+clin$stage_simple <- NA
+clin$stage_simple[grep("Stage I",   clin$ajcc_pathologic_stage)] <- "I"
+clin$stage_simple[grep("Stage II",  clin$ajcc_pathologic_stage)] <- "II"
+clin$stage_simple[grep("Stage III", clin$ajcc_pathologic_stage)] <- "III"
+clin$stage_simple[grep("Stage IV",  clin$ajcc_pathologic_stage)] <- "IV"
+clin$stage_simple <- factor(clin$stage_simple, levels=c("I","II","III","IV"))
 clin$os_event_new <- ifelse(clin$vital_status == "Dead", 1, 0)
 clin$os_time_new  <- ifelse(!is.na(clin$days_to_death),
                             clin$days_to_death,
                             clin$paper_Survival)
 
-# Stage 
-clin$stage_simple <- NA
-clin$stage_simple[grep("Stage I",   clin$ajcc_pathologic_stage)]   <- "I"
-clin$stage_simple[grep("Stage II",  clin$ajcc_pathologic_stage)]   <- "II"
-clin$stage_simple[grep("Stage III", clin$ajcc_pathologic_stage)]   <- "III"
-clin$stage_simple[grep("Stage IV",  clin$ajcc_pathologic_stage)]   <- "IV"
-clin$stage_simple <- factor(clin$stage_simple, levels=c("I","II","III","IV"))
-
-# Age (years)
-clin$age_years <- clin$age_at_diagnosis / 365
-
-# Gene expression 
-genes <- c("B4GALNT1","CERS4")
-expr_sub <- t(expr_symbol[genes, ])
-clin <- cbind(clin, expr_sub[rownames(clin), ])
-
-# Cutoff group
-clin$B4GALNT1_group <- ifelse(clin$B4GALNT1 >= 135.5, "High", "Low")
-clin$CERS4_group    <- ifelse(clin$CERS4    >= 697.5, "High", "Low")
-
-
-
-################ MAF data (MAF)
-
-library(maftools)
-library(dplyr)
-library(stringr)
-
-
-# 1) TCGA-LUAD MAF 
-query_maf <- GDCquery(
-  project = "TCGA-LUAD",
-  data.category = "Simple Nucleotide Variation",
-  data.type = "Masked Somatic Mutation",
-  workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
-)
-
-GDCdownload(query_maf, method = "api", files.per.chunk = 100, directory = "/home/jje5726/98/JJE/TCGA/GDCdata")
-maf_data <- GDCprepare(query_maf, directory = "/home/jje5726/98/JJE/TCGA/GDCdata")
-
-
-
-
-# MAF data load
-# maf_tumor (tumor sample)
-
-# EGFR  (Exon19Del + L858R)
+# ================================
+# 3. mutations
+# ================================
+# EGFR (Exon19Del, L858R)
 ex19_patterns <- c("E746_A750del", "E746_S752delinsV",
                    "L747_E749del", "L747_T751del",
                    "L747_P753delinsQ", "L747_T751delinsP")
+
 egfr_status <- maf_tumor@data %>%
   filter(Hugo_Symbol == "EGFR") %>%
   mutate(
@@ -79,120 +66,162 @@ egfr_status <- maf_tumor@data %>%
     L858R_flag     = if_else(HGVSp_Short == "p.L858R", 1, 0)
   ) %>%
   group_by(Tumor_Sample_Barcode) %>%
-  summarise(EGFR_mut_status = max(Exon19Del_flag | L858R_flag, na.rm = TRUE), .groups="drop") %>%
+  summarise(EGFR_mut_status = max(Exon19Del_flag | L858R_flag, na.rm = TRUE),
+            .groups = "drop") %>%
   mutate(Tumor_Sample_Barcode = substr(Tumor_Sample_Barcode, 1, 19)) %>%
   distinct(Tumor_Sample_Barcode, .keep_all = TRUE)
 
-# KRAS  (codon 12,13,61)
+# KRAS (codon 12, 13, 61)
 kras_status <- maf_tumor@data %>%
   filter(Hugo_Symbol == "KRAS") %>%
   mutate(codon = as.numeric(str_extract(HGVSp_Short, "\\d+")),
          hotspot_flag = if_else(codon %in% c(12, 13, 61), 1, 0)) %>%
   group_by(Tumor_Sample_Barcode) %>%
-  summarise(KRAS_mut_status = max(hotspot_flag, na.rm = TRUE), .groups="drop") %>%
+  summarise(KRAS_mut_status = max(hotspot_flag, na.rm = TRUE),
+            .groups = "drop") %>%
   mutate(Tumor_Sample_Barcode = substr(Tumor_Sample_Barcode, 1, 19)) %>%
   distinct(Tumor_Sample_Barcode, .keep_all = TRUE)
 
-# TP53  (Exon 5–8)
+# TP53 (Exon 5–8 → codon 102–292)
 tp53_status <- maf_tumor@data %>%
   filter(Hugo_Symbol == "TP53") %>%
   mutate(codon = as.numeric(str_extract(HGVSp_Short, "\\d+")),
          hotspot_flag = if_else(!is.na(codon) & codon >= 102 & codon <= 292, 1, 0)) %>%
   group_by(Tumor_Sample_Barcode) %>%
-  summarise(TP53_mut_status = max(hotspot_flag, na.rm = TRUE), .groups="drop") %>%
+  summarise(TP53_mut_status = max(hotspot_flag, na.rm = TRUE),
+            .groups = "drop") %>%
   mutate(Tumor_Sample_Barcode = substr(Tumor_Sample_Barcode, 1, 19)) %>%
   distinct(Tumor_Sample_Barcode, .keep_all = TRUE)
 
-# clin + mut
+# 병합
 clin_with_mut <- clin %>%
-  mutate(Tumor_Sample_Barcode = substr(rownames(clin), 1, 19)) %>%
-  left_join(egfr_status, by="Tumor_Sample_Barcode") %>%
-  left_join(kras_status, by="Tumor_Sample_Barcode") %>%
-  left_join(tp53_status, by="Tumor_Sample_Barcode") %>%
+  left_join(egfr_status, by = "Tumor_Sample_Barcode") %>%
+  left_join(kras_status, by = "Tumor_Sample_Barcode") %>%
+  left_join(tp53_status, by = "Tumor_Sample_Barcode") %>%
   mutate(
     EGFR_mut_status = if_else(is.na(EGFR_mut_status), 0, EGFR_mut_status),
     KRAS_mut_status = if_else(is.na(KRAS_mut_status), 0, KRAS_mut_status),
     TP53_mut_status = if_else(is.na(TP53_mut_status), 0, TP53_mut_status)
   )
 
-
-
-###### Survival
-
-library(survival)
-library(broom)
-library(forestplot)
-
-
-# 1) Univariate Cox
-
+# ================================
+# 4. Cox 
+# ================================
 vars <- c("age_years", "gender", "stage_simple",
           "B4GALNT1_group", "CERS4_group",
           "EGFR_mut_status", "KRAS_mut_status", "TP53_mut_status")
 
+# Univariate Cox
 uni_results <- lapply(vars, function(v){
   f <- as.formula(paste("Surv(os_time_new, os_event_new) ~", v))
-  cox <- coxph(f, data=clin_with_mut)
-  tidy(cox, exponentiate=TRUE, conf.int=TRUE)
+  cox <- coxph(f, data = clin_with_mut)
+  tidy(cox, exponentiate = TRUE, conf.int = TRUE)
 }) %>% bind_rows()
 
+# Multivariate Cox
+f_multi <- as.formula(paste("Surv(os_time_new, os_event_new) ~", paste(vars, collapse = " + ")))
+cox_multi <- coxph(f_multi, data = clin_with_mut)
+multi_results <- tidy(cox_multi, exponentiate = TRUE, conf.int = TRUE)
 
-# 2) Multivariate Cox
-
-multi_vars <- vars
-f_multi <- as.formula(paste("Surv(os_time_new, os_event_new) ~", paste(multi_vars, collapse=" + ")))
-cox_multi <- coxph(f_multi, data=clin_with_mut)
-multi_results <- tidy(cox_multi, exponentiate=TRUE, conf.int=TRUE)
-
-
-## Forest Plot
-
-# Sig
+# ================================
+# 5. Forest plot
+# ================================
+# Univariate
 uni_results$stars <- ifelse(uni_results$p.value < 0.001, "***",
                             ifelse(uni_results$p.value < 0.01, "**",
                                    ifelse(uni_results$p.value < 0.05, "*", "")))
-multi_results$stars <- ifelse(multi_results$p.value < 0.001, "***",
-                              ifelse(multi_results$p.value < 0.01, "**",
-                                     ifelse(multi_results$p.value < 0.05, "*", "")))
 
-# names
-nice_names <- c("Age (years)", "Gender (male)",
-                "Stage II vs I", "Stage III vs I", "Stage IV vs I",
-                "B4GALNT1 (Low vs High)", "CERS4 (Low vs High)",
-                "EGFR mutation", "KRAS mutation", "TP53 mutation")
+nice_names_uni <- c(
+  "Age (years)", "Gender (male)",
+  "Stage II vs I", "Stage III vs I", "Stage IV vs I",
+  "B4GALNT1 (Low vs High)", "CERS4 (Low vs High)",
+  "EGFR mutation", "KRAS mutation", "TP53 mutation"
+)
 
-# Univariate Forest Plot
 table_text_uni <- rbind(
   c("Variable", "HR (95% CI)", "p-value", "Sig"),
-  cbind(Variable = nice_names,
+  cbind(Variable = nice_names_uni,
         HR_CI = sprintf("%.2f (%.2f–%.2f)", uni_results$estimate, uni_results$conf.low, uni_results$conf.high),
         p_value = sprintf("%.3f", uni_results$p.value),
         Sig = uni_results$stars)
 )
-forestplot(labeltext=table_text_uni,
-           mean=c(NA, uni_results$estimate),
-           lower=c(NA, uni_results$conf.low),
-           upper=c(NA, uni_results$conf.high),
-           zero=1, boxsize=0.2, xlab="Hazard Ratio (95% CI)",
-           title="Univariate Cox Analysis")
 
-# Multivariate Forest Plot
+forestplot(labeltext = table_text_uni,
+           mean  = c(NA, uni_results$estimate),
+           lower = c(NA, uni_results$conf.low),
+           upper = c(NA, uni_results$conf.high),
+           zero = 1, boxsize = 0.2,
+           col = fpColors(box="royalblue", line="darkblue", zero="black"),
+           xlab = "Hazard Ratio (95% CI)",
+           title = "Univariate Cox Analysis")
+
+# Multivariate
+multi_results$stars <- ifelse(multi_results$p.value < 0.001, "***",
+                              ifelse(multi_results$p.value < 0.01, "**",
+                                     ifelse(multi_results$p.value < 0.05, "*", "")))
+
 table_text_multi <- cbind(
-  c("Variable", nice_names),
+  c("Variable", nice_names_uni),
   c("HR (95% CI)", sprintf("%.2f (%.2f–%.2f)", multi_results$estimate, multi_results$conf.low, multi_results$conf.high)),
   c("p-value", sprintf("%.3f", multi_results$p.value)),
   c("Sig", multi_results$stars)
 )
-forestplot(labeltext=table_text_multi,
-           mean=c(NA, multi_results$estimate),
-           lower=c(NA, multi_results$conf.low),
-           upper=c(NA, multi_results$conf.high),
-           zero=1, boxsize=0.2, xlab="Hazard Ratio (95% CI)",
-           title="Multivariate Cox Analysis")
+
+forestplot(labeltext = table_text_multi,
+           mean  = c(NA, multi_results$estimate),
+           lower = c(NA, multi_results$conf.low),
+           upper = c(NA, multi_results$conf.high),
+           zero = 1, boxsize = 0.2,
+           col = fpColors(box="royalblue", line="darkblue", zero="black"),
+           xlab = "Hazard Ratio (95% CI)",
+           title = "Multivariate Cox Analysis")
 
 
 
+library(dplyr)
+library(stringr)
+library(survival)
+library(broom)
+library(forestplot)
+library(grid)
+
+# ================================
+# Univariate forest plot (save)
+# ================================
+jpeg("Univariate_Cox_TCGA_LUAD.jpg", width = 3500, height = 2200, res = 300)
+forestplot(labeltext = table_text_uni,
+           mean  = c(NA, uni_results$estimate),
+           lower = c(NA, uni_results$conf.low),
+           upper = c(NA, uni_results$conf.high),
+           zero  = 1, boxsize = 0.2,
+           lineheight = unit(8, "mm"),
+           col = fpColors(box="royalblue", line="darkblue", zero="black"),
+           xlab = "Hazard Ratio (95% CI)",
+           title = "Univariate Cox Analysis (TCGA-LUAD)",
+           txt_gp = fpTxtGp(label = gpar(cex = 1.4),   # 
+                            ticks = gpar(cex = 1.2),   # x
+                            xlab  = gpar(cex = 1.4),   # x lable
+                            title = gpar(cex = 1.6)))  # title
+dev.off()
 
 
+# ================================
+# Multivariate forest plot (save)
+# ================================
+jpeg("Multivariate_Cox_TCGA_LUAD.jpg", width = 3500, height = 2200, res = 300)
+forestplot(labeltext = table_text_multi,
+           mean  = c(NA, multi_results$estimate),
+           lower = c(NA, multi_results$conf.low),
+           upper = c(NA, multi_results$conf.high),
+           zero  = 1, boxsize = 0.2,
+           lineheight = unit(8, "mm"),
+           col = fpColors(box="royalblue", line="darkblue", zero="black"),
+           xlab = "Hazard Ratio (95% CI)",
+           title = "Multivariate Cox Analysis (TCGA-LUAD)",
+           txt_gp = fpTxtGp(label = gpar(cex = 1.4),
+                            ticks = gpar(cex = 1.2),
+                            xlab  = gpar(cex = 1.4),
+                            title = gpar(cex = 1.6)))
+dev.off()
 
 
