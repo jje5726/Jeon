@@ -93,7 +93,7 @@ tp53_status <- maf_tumor@data %>%
   mutate(Tumor_Sample_Barcode = substr(Tumor_Sample_Barcode, 1, 19)) %>%
   distinct(Tumor_Sample_Barcode, .keep_all = TRUE)
 
-# 병합
+# merge
 clin_with_mut <- clin %>%
   left_join(egfr_status, by = "Tumor_Sample_Barcode") %>%
   left_join(kras_status, by = "Tumor_Sample_Barcode") %>%
