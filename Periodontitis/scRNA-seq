@@ -1,0 +1,500 @@
+## =========================================================
+## GSE171213 (HC1~4, PD1~5) 통합 + Major/Mid/Minor 주석 파이프라인
+## =========================================================
+
+rm(list = ls())
+
+## ------------------------- 경로/패키지 -------------------------
+setwd("/home/jje5726/99/JJE/scRNA-seq/GEO")
+suppressMessages({
+  library(Seurat)
+  library(dplyr)
+  library(ggplot2)
+  library(Matrix)
+})
+set.seed(1234)
+
+## ------------------------- 0) 개별 샘플 로드 -------------------------
+hc1 <- readRDS("hc1.rds"); hc2 <- readRDS("hc2.rds")
+hc3 <- readRDS("hc3.rds"); hc4 <- readRDS("hc4.rds")
+pd1 <- readRDS("pd1.rds"); pd2 <- readRDS("pd2.rds")
+pd3 <- readRDS("pd3.rds"); pd4 <- readRDS("pd4.rds"); pd5 <- readRDS("pd5.rds")
+
+## ------------------------- 1) 개별 객체 정리/저장 -------------------------
+.clean_one <- function(s){
+  DefaultAssay(s) <- "RNA"
+  s <- DietSeurat(s, assays = "RNA", dimreducs = NULL, graphs = NULL)
+  drop_pat <- "(celltype|major|mid|minor|annot|annotation|^SCT_snn_res|^integrated_snn_res|^seurat_clusters)"
+  ann_cols <- grep(drop_pat, colnames(s@meta.data), ignore.case = TRUE, value = TRUE)
+  if (length(ann_cols) > 0) s@meta.data[, ann_cols] <- NULL
+  s[["percent.mt"]] <- PercentageFeatureSet(s, pattern = "^MT-")
+  keep_cols <- c("orig.ident","nCount_RNA","nFeature_RNA","percent.mt")
+  s@meta.data <- s@meta.data[, intersect(colnames(s@meta.data), keep_cols), drop = FALSE]
+  s
+}
+
+samples_list <- list(hc1=hc1,hc2=hc2,hc3=hc3,hc4=hc4,pd1=pd1,pd2=pd2,pd3=pd3,pd4=pd4,pd5=pd5)
+for(nm in names(samples_list)){
+  s <- .clean_one(samples_list[[nm]])
+  saveRDS(s, paste0(nm, "_clean.rds"))
+  cat(sprintf("%s_clean.rds 저장 — Cells: %d | Genes: %d\n", nm, ncol(s), nrow(s)))
+}
+
+## ------------------------- 2) SCTransform & 통합 -------------------------
+files <- c("hc1_clean.rds","hc2_clean.rds","hc3_clean.rds","hc4_clean.rds",
+           "pd1_clean.rds","pd2_clean.rds","pd3_clean.rds","pd4_clean.rds","pd5_clean.rds")
+
+objs  <- lapply(files, readRDS)
+names(objs) <- sub("_clean\\.rds$", "", files)
+
+for (nm in names(objs)) {
+  s <- objs[[nm]]
+  DefaultAssay(s) <- "RNA"
+  s$sample_id <- nm
+  s <- SCTransform(s, vars.to.regress = "percent.mt", verbose = FALSE)
+  objs[[nm]] <- s
+  cat(nm, ": cells =", ncol(s), " | genes =", nrow(s), "\n")
+}
+
+features <- SelectIntegrationFeatures(object.list = objs, nfeatures = 3000)
+objs <- PrepSCTIntegration(object.list = objs, anchor.features = features)
+anchors <- FindIntegrationAnchors(object.list = objs, normalization.method = "SCT",
+                                  anchor.features = features, dims = 1:50)
+obj <- IntegrateData(anchorset = anchors, normalization.method = "SCT", dims = 1:50)
+
+## 임베딩/클러스터
+obj <- RunPCA(obj, npcs = 50, verbose = FALSE)
+obj <- RunUMAP(obj, dims = 1:40, reduction = "pca", min.dist = 0.3, n.neighbors = 30)
+obj <- FindNeighbors(obj, dims = 1:40, k.param = 30)
+obj <- FindClusters(obj, resolution = 0.2)
+
+## 메타정보 기록
+obj@misc$integration <- list(nfeatures=3000, dims=1:40, k.param=30, res=0.2, date=Sys.time())
+
+## 시각 확인(옵션)
+# DimPlot(obj, group.by = "sample_id", reduction = "umap", shuffle = TRUE, pt.size = 0.2)
+# DimPlot(obj, label = TRUE, repel = TRUE, reduction = "umap") + NoLegend()
+# table(Idents(obj))
+
+## 튜닝 결과 확정(요청대로 dims 1:30, res 0.2)
+obj <- FindNeighbors(obj, dims = 1:30, k.param = 30)
+obj <- FindClusters(obj, resolution = 0.2)
+obj <- RunUMAP(obj, dims = 1:30, min.dist = 0.3, n.neighbors = 30)
+obj@misc$integration <- list(nfeatures=3000, dims=1:30, k.param=30, res=0.2, date=Sys.time())
+
+## 그룹 라벨(HC/PD)
+if (!"group" %in% colnames(obj@meta.data)) {
+  obj$group <- ifelse(grepl("^HC", obj$sample_id, ignore.case = TRUE), "HC", "PD")
+}
+
+saveRDS(obj, "integrated_fixed_umap.rds")
+cat("통합 객체 저장: integrated_fixed_umap.rds\n")
+
+## ------------------------- 3) 클러스터 마커 확인(요약) -------------------------
+DefaultAssay(obj) <- "SCT"
+markers <- FindAllMarkers(obj, only.pos = TRUE, logfc.threshold = 0.25)
+top5 <- markers %>% group_by(cluster) %>% slice_max(order_by = avg_log2FC, n = 5)
+# DotPlot(obj, features = unique(top5$gene)) + RotatedAxis()
+
+## ------------------------- 4) Major 라벨 -------------------------
+maj_map <- c(
+  '0'='Immune','1'='Immune','2'='Immune','3'='Immune',
+  '4'='Endothelial','5'='Immune','6'='Stromal','7'='Immune',
+  '8'='Immune','9'='Epithelial','10'='Immune','11'='Immune','12'='Immune'
+)
+obj$Major <- factor(unname(maj_map[as.character(Idents(obj))]),
+                    levels = c('Epithelial','Stromal','Endothelial','Neural','Immune'))
+# DimPlot(obj, reduction="umap", group.by="Major", pt.size=0.2)
+
+## ------------------------- 5) Mid 라벨 (Epi/Stromal/Endo/Immune) -------------------------
+.safe_add_score <- function(o, genes, name){
+  feats <- intersect(genes, rownames(o))
+  if (length(feats)==0) {
+    o@meta.data[[paste0(name,"_score1")]] <- NA_real_
+  } else {
+    o <- AddModuleScore(o, features = list(feats), name = paste0(name,"_score"), nbin = 24, seed = 1)
+  }
+  o
+}
+DefaultAssay(obj) <- "SCT"
+
+## Epithelial: Keratinocytes vs Other
+epi_markers <- list(
+  Epith_Ker  = c("KRT5","KRT14","KRT15","KRT19"),
+  Epith_Merk = c("KRT20","AHR","NEUROD1"),
+  Epith_Mela = c("PMEL","MLANA","DCT"),
+  Epith_LC   = c("CD207","CD1A")
+)
+for(nm in names(epi_markers)) obj <- .safe_add_score(obj, epi_markers[[nm]], nm)
+epi_cells <- WhichCells(obj, expression = Major == "Epithelial")
+ker  <- obj@meta.data[epi_cells, "Epith_Ker_score1",  drop=TRUE]
+merk <- obj@meta.data[epi_cells, "Epith_Merk_score1", drop=TRUE]
+mela <- obj@meta.data[epi_cells, "Epith_Mela_score1", drop=TRUE]
+lc   <- obj@meta.data[epi_cells, "Epith_LC_score1",   drop=TRUE]
+other_max <- pmax(merk, mela, lc, na.rm = TRUE)
+if (!"Mid" %in% colnames(obj@meta.data)) obj$Mid <- NA_character_
+obj$Mid[epi_cells] <- ifelse(ker > other_max, "Keratinocytes", "Other")
+
+## Stromal: Fibroblasts
+obj <- .safe_add_score(obj, c("COL1A1","COL6A3","LUM","DCN","FN1","SPARC"), "Stromal_Fib")
+str_cells <- WhichCells(obj, expression = Major == "Stromal")
+if (!"Mid" %in% colnames(obj@meta.data)) obj$Mid <- NA_character_
+obj$Mid[str_cells] <- "Fibroblasts"
+
+## Endothelial: Vascul / Lymph / Other
+endo_sets <- list(
+  Endo_Vas_AEC   = c("ACKR1","GJA5","EFNB2"),
+  Endo_Vas_CEC   = c("CLDN5","SPARC","TM4SF1"),
+  Endo_Vas_VEC   = c("CCL14","IGFBP7","TMEM88"),
+  Endo_Lymph     = c("PROX1","LYVE1","PDPN","CCL21"),
+  Endo_PC_VSM    = c("RGS5","ACTA2","MYH11","TAGLN","CNN1","CALD1")
+)
+for(nm in names(endo_sets)) obj <- .safe_add_score(obj, endo_sets[[nm]], nm)
+endo_cells <- WhichCells(obj, expression = Major == "Endothelial")
+aec  <- obj@meta.data[endo_cells, "Endo_Vas_AEC_score1", drop=TRUE]
+cec  <- obj@meta.data[endo_cells, "Endo_Vas_CEC_score1", drop=TRUE]
+vec  <- obj@meta.data[endo_cells, "Endo_Vas_VEC_score1", drop=TRUE]
+lym  <- obj@meta.data[endo_cells, "Endo_Lymph_score1",   drop=TRUE]
+pcvs <- obj@meta.data[endo_cells, "Endo_PC_VSM_score1",  drop=TRUE]
+vas_max <- pmax(aec, cec, vec, na.rm = TRUE)
+obj$Mid[endo_cells] <- ifelse(vas_max > pmax(lym, pcvs, na.rm = TRUE), "Vascul",
+                              ifelse(lym > pcvs, "Lymph", "Other"))
+
+## Immune: Lymphoid / Myeloid / Granulocytes
+imm_sets <- list(
+  Imm_Lymphoid_TNK   = c("CD3E","TRBC2","NKG7","GZMA","KLRF1","KLRB1"),
+  Imm_Lymphoid_BPlas = c("MS4A1","CD79A","IGKC","IGHG1","IGHG3","JCHAIN"),
+  Imm_Myeloid        = c("LYZ","CD68","C1QA","C1QB","HLA-DQA1","IRF7"),
+  Imm_Granulocyte    = c("S100A8","S100A9","FCN1")
+)
+for(nm in names(imm_sets)) obj <- .safe_add_score(obj, imm_sets[[nm]], nm)
+imm_cells <- WhichCells(obj, expression = Major == "Immune")
+lym_sum <- rowSums(cbind(
+  obj@meta.data[imm_cells,"Imm_Lymphoid_TNK_score1",  drop=FALSE],
+  obj@meta.data[imm_cells,"Imm_Lymphoid_BPlas_score1",drop=FALSE]
+), na.rm=TRUE)
+my  <- obj@meta.data[imm_cells,"Imm_Myeloid_score1",     drop=TRUE]
+gra <- obj@meta.data[imm_cells,"Imm_Granulocyte_score1", drop=TRUE]
+obj$Mid[imm_cells] <- c("Granulocytes","Lymphoid","Myeloid")[max.col(cbind(gra, lym_sum, my), ties.method="first")]
+
+## ------------------------- 6) Epithelial Minor (Ker: Mast/Lining/SKJK) -------------------------
+DefaultAssay(obj) <- "SCT"
+epi_ker <- WhichCells(obj, expression = Major=="Epithelial" & Mid=="Keratinocytes")
+ker_minor <- list(
+  Ker_Mast   = c("CXCL14","HOPX"),
+  Ker_Lining = c("KRT13","KRT4"),
+  Ker_SKJK   = c("KRT19","FDCSP","ODAM","RHCG","IL18","SAA1","SAA2")
+)
+for(nm in names(ker_minor)) obj <- .safe_add_score(obj, ker_minor[[nm]], nm)
+if (!"Minor" %in% colnames(obj@meta.data)) obj$Minor <- NA_character_
+if (length(epi_ker)>0){
+  sc <- FetchData(obj, vars=c("Ker_Mast_score1","Ker_Lining_score1","Ker_SKJK_score1"))[epi_ker,,drop=FALSE]
+  obj$Minor[epi_ker] <- c("Masticatory","Lining","Sulcular/Junctional")[max.col(as.matrix(sc), ties.method = "first")]
+}
+
+## ------------------------- 7) Endothelial Minor (AEC/CEC/VEC/LEC/PC·VSM) -------------------------
+endo_minor <- list(
+  Endo_AEC   = c("ACKR1","GJA5","EFNB2"),
+  Endo_CEC   = c("CLDN5","SPARC","TM4SF1"),
+  Endo_VEC   = c("CCL14","IGFBP7","TMEM88"),
+  Endo_LEC   = c("PROX1","LYVE1","PDPN","CCL21"),
+  Endo_PC_VSM= c("RGS5","ACTA2","MYH11","TAGLN","CNN1","CALD1")
+)
+for(nm in names(endo_minor)) obj <- .safe_add_score(obj, endo_minor[[nm]], nm)
+if (!"Minor" %in% colnames(obj@meta.data)) obj$Minor <- NA_character_
+if (length(endo_cells)>0){
+  sc <- FetchData(obj, vars=c("Endo_AEC_score1","Endo_CEC_score1","Endo_VEC_score1","Endo_LEC_score1","Endo_PC_VSM_score1"))[endo_cells,,drop=FALSE]
+  obj$Minor[endo_cells] <- c("AEC","CEC","VEC","LEC","PC/VSM")[max.col(as.matrix(sc), ties.method = "first")]
+}
+
+## ------------------------- 8) Immune 서브셋 재클러스터 + Minor -------------------------
+imm_cells <- WhichCells(obj, expression = Major == "Immune")
+obj_imm <- subset(obj, cells = imm_cells)
+
+DefaultAssay(obj_imm) <- "SCT"
+obj_imm <- SCTransform(obj_imm, vars.to.regress = "percent.mt", verbose = FALSE)
+obj_imm <- RunPCA(obj_imm, npcs = 50, verbose = FALSE)
+obj_imm <- FindNeighbors(obj_imm, dims = 1:20, k.param = 50)
+obj_imm <- FindClusters(obj_imm, resolution = 0.3)
+obj_imm <- RunUMAP(obj_imm, dims = 1:20, min.dist = 0.3, n.neighbors = 50)
+
+## Immune Mid (Granulocytes/Lymphoid/Myeloid)
+mid_sets <- list(
+  Granulocytes = c("S100A8","S100A9","FCN1"),
+  Lym_TNK      = c("CD3E","TRBC2","NKG7","GZMA","KLRF1","KLRB1"),
+  Lym_BPlasma  = c("MS4A1","CD79A","IGKC","JCHAIN","IGHG1","IGHG3"),
+  Myeloid      = c("LYZ","CD68","C1QA","C1QB","HLA-DQA1","IRF7")
+)
+for(nm in names(mid_sets)) obj_imm <- .safe_add_score(obj_imm, mid_sets[[nm]], nm)
+sc_Lym  <- rowSums(cbind(
+  obj_imm@meta.data[,"Lym_TNK_score1",     drop=FALSE],
+  obj_imm@meta.data[,"Lym_BPlasma_score1", drop=FALSE]
+), na.rm=TRUE)
+sc_Gra  <- obj_imm@meta.data[,"Granulocytes_score1", drop=TRUE]
+sc_Mye  <- obj_imm@meta.data[,"Myeloid_score1",      drop=TRUE]
+obj_imm$Mid_Imm <- c("Granulocytes","Lymphoid","Myeloid")[max.col(cbind(sc_Gra, sc_Lym, sc_Mye), ties.method="first")]
+
+## Granulocytes Minor (Neut/Mast)
+gran_minor <- list(
+  Neut = c("S100A8","S100A9","FCN1"),
+  Mast = c("TPSAB1","CPA3","KIT")
+)
+for(nm in names(gran_minor)) obj_imm <- .safe_add_score(obj_imm, gran_minor[[nm]], nm)
+if (!"Minor_Imm" %in% colnames(obj_imm@meta.data)) obj_imm$Minor_Imm <- NA_character_
+gra <- WhichCells(obj_imm, expression = Mid_Imm == "Granulocytes")
+if (length(gra)>0){
+  sc  <- FetchData(obj_imm, vars = c("Neut_score1","Mast_score1"))[gra,,drop=FALSE]
+  obj_imm$Minor_Imm[gra] <- c("Neut","Mast")[max.col(as.matrix(sc), ties.method = "first")]
+}
+
+## Lymphoid Minor (B/Plasma/T-subsets/ILC/NK)
+lym_sets <- list(
+  Lym_B      = c("MS4A1","CD79A"),
+  Lym_Plasma = c("JCHAIN","IGKC","IGHG1","IGHG3","XBP1","PRDM1"),
+  T_Th    = c("CD4","IL7R","CCR7"),
+  T_Treg  = c("FOXP3","IL2RA","CTLA4"),
+  T_Th17  = c("RORC","CCR6","IL23R"),
+  T_MAIT  = c("KLRB1","SLC4A10"),
+  T_gd    = c("TRDC","TRGC1"),
+  T_Tc    = c("CD8A","CD8B","GZMB","PRF1"),
+  Lym_ILC = c("IL7R","KIT","KLRB1"),
+  Lym_NK  = c("NKG7","GNLY","KLRD1","FGFBP2")
+)
+for(nm in names(lym_sets)) obj_imm <- .safe_add_score(obj_imm, lym_sets[[nm]], nm)
+lym_cells <- WhichCells(obj_imm, expression = Mid_Imm == "Lymphoid")
+if (length(lym_cells)>0){
+  vars_use <- c("Lym_B_score1","Lym_Plasma_score1","T_Th_score1","T_Treg_score1",
+                "T_Th17_score1","T_MAIT_score1","T_gd_score1","T_Tc_score1",
+                "Lym_ILC_score1","Lym_NK_score1")
+  sc <- FetchData(obj_imm, vars = vars_use)[lym_cells,,drop=FALSE]
+  lab_map <- c("B cells","Plasma","T_Th","T_Treg","T_Th17","T_MAIT","T_gd","T_Tc","ILC","NK")
+  obj_imm$Minor_Imm[lym_cells] <- lab_map[max.col(as.matrix(sc), ties.method = "first")]
+}
+
+## Myeloid Minor (Mac/Mono / cDC / pDC)
+mye_sets <- list(
+  Mye_MacMono = c("LYZ","CD68","C1QA","C1QB","MSR1","APOE"),
+  Mye_cDC     = c("CCR7","LAMP3","XCR1","CLEC10A","FCER1A","FSCN1"),
+  Mye_pDC     = c("GZMB","IRF7","TCF4","CLEC4C","IL3RA")
+)
+for(nm in names(mye_sets)) obj_imm <- .safe_add_score(obj_imm, mye_sets[[nm]], nm)
+mye_cells <- WhichCells(obj_imm, expression = Mid_Imm == "Myeloid")
+if (length(mye_cells)>0){
+  sc <- FetchData(obj_imm, vars = c("Mye_MacMono_score1","Mye_cDC_score1","Mye_pDC_score1"))[mye_cells,,drop=FALSE]
+  obj_imm$Minor_Imm[mye_cells] <- c("Mac/Mono","cDC","pDC")[max.col(as.matrix(sc), ties.method = "first")]
+}
+
+## (선택) 특정 클러스터 확정 라벨 반영 — 원래 로직 유지
+Idents(obj_imm) <- "seurat_clusters"
+neut_clust <- c("4","7"); mast_clust <- c("10"); myeloid_from_gra <- c("5") # keep
+cells_neut <- WhichCells(obj_imm, idents = neut_clust)
+cells_mast <- WhichCells(obj_imm, idents = mast_clust)
+if(length(cells_neut)>0){ obj_imm$Mid_Imm[cells_neut] <- "Granulocytes"; obj_imm$Minor_Imm[cells_neut] <- "Neut" }
+if(length(cells_mast)>0){ obj_imm$Mid_Imm[cells_mast] <- "Granulocytes"; obj_imm$Minor_Imm[cells_mast] <- "Mast" }
+
+## (선택) Myeloid 세부 확정 — 5=Mac/Mono, 14=pDC
+cells_c5  <- WhichCells(obj_imm, idents = "5")
+cells_c14 <- WhichCells(obj_imm, idents = "14")
+if(length(cells_c5)>0){  obj_imm$Mid_Imm[cells_c5]   <- "Myeloid"; obj_imm$Minor_Imm[cells_c5]  <- "Mac/Mono" }
+if(length(cells_c14)>0){ obj_imm$Mid_Imm[cells_c14]  <- "Myeloid"; obj_imm$Minor_Imm[cells_c14] <- "pDC" }
+
+## 요약 출력/저장
+cat("\n[통합 Major/Mid 테이블]\n"); print(table(obj$Major, obj$Mid, useNA="ifany"))
+cat("\n[Immune Mid/Minor 테이블]\n"); print(table(obj_imm$Mid_Imm, obj_imm$Minor_Imm, useNA="ifany"))
+
+saveRDS(obj_imm, "integrated_immune_subset.rds")
+cat("Immune 서브셋 저장: integrated_immune_subset.rds\n")
+
+
+
+## =========================================================
+## Immune 세부 점검 + Minor 확정 + 전체 UMAP 반영 (정리본)
+## =========================================================
+
+suppressMessages({
+  library(Seurat)
+  library(dplyr)
+  library(Matrix)
+  library(ggplot2)
+  library(patchwork)
+})
+set.seed(1234)
+
+## 0) 객체 준비: 메모리에 없으면 RDS에서 로드
+if (!exists("obj_imm")) {
+  stopifnot(file.exists("integrated_immune_subset.rds"))
+  obj_imm <- readRDS("integrated_immune_subset.rds")
+}
+if (!exists("obj")) {
+  stopifnot(file.exists("integrated_fixed_umap.rds"))
+  obj <- readRDS("integrated_fixed_umap.rds")
+}
+
+## 공통 세팅
+DefaultAssay(obj_imm) <- "SCT"
+Idents(obj_imm) <- "seurat_clusters"
+obj_imm <- PrepSCTFindMarkers(obj_imm)  # 이미 실행돼도 안전
+
+## === Helper: 마커 추출/랭킹 함수들 (1회 정의) ===
+get_top_markers <- function(object, cl, n = 10,
+                            lfc = 0.25, minpct = 0.10, test = "wilcox"){
+  mk <- FindMarkers(object, ident.1 = cl, only.pos = TRUE,
+                    logfc.threshold = lfc, min.pct = minpct, test.use = test)
+  mk$cluster <- cl
+  mk$gene <- rownames(mk)
+  mk <- mk[order(-mk$avg_log2FC),
+           c("cluster","gene","avg_log2FC","pct.1","pct.2","p_val_adj")]
+  head(mk, n)
+}
+
+rank_markers <- function(object, cl, markers){
+  g <- intersect(markers, rownames(object))
+  if (length(g) == 0)
+    return(data.frame(gene=character(), avg_in=NA, avg_out=NA, log2FC=NA))
+  cells_in  <- WhichCells(object, idents = cl)
+  cells_out <- setdiff(colnames(object), cells_in)
+  mat <- GetAssayData(object, slot="data")[g, , drop=FALSE]
+  avg_in  <- Matrix::rowMeans(mat[, cells_in,  drop=FALSE])
+  avg_out <- Matrix::rowMeans(mat[, cells_out, drop=FALSE])
+  df <- data.frame(
+    gene   = g,
+    avg_in = as.numeric(avg_in),
+    avg_out= as.numeric(avg_out),
+    log2FC = log2((avg_in + 1e-6)/(avg_out + 1e-6))
+  )
+  df[order(-df$avg_in, -df$log2FC), , drop = FALSE]
+}
+
+panel_compare_c16 <- function(object, c = "16"){
+  Idents(object) <- "seurat_clusters"
+  c16    <- WhichCells(object, idents = c)
+  others <- setdiff(colnames(object), c16)
+  get_sum <- function(genes){
+    genes <- intersect(genes, rownames(object))
+    if (length(genes) == 0)
+      return(data.frame(det_c16=NA, det_other=NA, avg_c16=NA, avg_other=NA, log2FC=NA))
+    mat <- GetAssayData(object, slot="data")[genes, , drop=FALSE]
+    data.frame(
+      det_c16   = mean(Matrix::colSums(mat[, c16,   drop=FALSE] > 0) > 0),
+      det_other = mean(Matrix::colSums(mat[, others, drop=FALSE] > 0) > 0),
+      avg_c16   = mean(Matrix::colMeans(mat[, c16,   drop=FALSE])),
+      avg_other = mean(Matrix::colMeans(mat[, others, drop=FALSE])),
+      log2FC    = log2((mean(Matrix::colMeans(mat[, c16, drop=FALSE])) + 1e-6) /
+                       (mean(Matrix::colMeans(mat[, others, drop=FALSE])) + 1e-6))
+    )
+  }
+  gd_markers   <- c("TRDC","TRGC1","TRGC2","TRDV2","TRGV9")
+  tc_markers   <- c("CD8A","NKG7","PRF1","GZMB","KLRD1")
+  mait_markers <- c("TRAV1-2","KLRB1","SLC4A10","IL7R")
+  rbind(
+    cbind(panel="gamma_delta", get_sum(gd_markers)),
+    cbind(panel="Tc",          get_sum(tc_markers)),
+    cbind(panel="MAIT",        get_sum(mait_markers))
+  )
+}
+
+## === 1) 특정 클러스터 빠른 점검 ===
+
+## Cluster 0: top10 + Th 패널 랭킹
+th_panel <- c("IL7R","CCR7","KLRB1","CTLA4","CCR6","FOXP3",
+              "TCF7","LEF1","SELL","CD8A","NKG7")
+cat("\n==== Top10: cluster 0 ====\n"); print(get_top_markers(obj_imm, "0", 10), row.names = FALSE)
+cat("\n==== Panel rank (Th): cluster 0 ====\n"); print(rank_markers(obj_imm, "0", th_panel), row.names = FALSE)
+
+## Cluster 1: top10 + Th 패널 랭킹
+cat("\n==== Top10: cluster 1 ====\n"); print(get_top_markers(obj_imm, "1", 10), row.names = FALSE)
+cat("\n==== Panel rank (Th): cluster 1 ====\n"); print(rank_markers(obj_imm, "1", th_panel), row.names = FALSE)
+
+## Cluster 16: γδ/NK 후보 점검
+gdnk_panel <- c("TRDC","TRGC1","KLRD1","NKG7","GNLY","PRF1","GZMB","CD8A")
+cat("\n==== Top10: cluster 16 ====\n"); print(get_top_markers(obj_imm, "16", 10), row.names = FALSE)
+cat("\n==== Panel rank (γδ/NK): cluster 16 ====\n"); print(rank_markers(obj_imm, "16", gdnk_panel), row.names = FALSE)
+
+## (옵션) 0–3번 클러스터 top10 테이블
+targets <- c("0","1","2","3")
+top_tbl <- do.call(rbind, lapply(targets, function(x) get_top_markers(obj_imm, x, 10)))
+# write.csv(top_tbl, "immune_c0-3_top10_markers.csv", row.names = FALSE)
+
+## (옵션) 표지 유전자 확인
+# FeaturePlot(obj_imm, features = c("CD3E","TRAC","ZBTB16","KLRD1","GNLY","NKG7"))
+
+## === 2) Immune Minor 확정 매핑(클러스터→Minor_Imm) ===
+Idents(obj_imm) <- "seurat_clusters"
+imm_map <- c(
+  "0"="T_Th",          # naive/CM Th
+  "1"="T_Treg",
+  "2"="NK",
+  "3"="Tc",
+  "4"="Neut",
+  "5"="Mac/Mono",
+  "6"="B cells",
+  "7"="Neut",
+  "8"="Plasma",
+  "9"="Plasma",
+  "10"="Mast",
+  "11"="Plasma",
+  "12"="Plasma",
+  "13"="Plasma",
+  "14"="pDC",
+  "15"="Plasma",
+  "16"="Tc"   # cycling cytotoxic T (γδ/Tc mix) → Tc로 표기
+)
+imm_cells <- WhichCells(obj_imm, expression = Mid_Imm %in% c("Granulocytes","Lymphoid","Myeloid"))
+cl_ids    <- as.character(obj_imm$seurat_clusters[imm_cells])
+if (!"Minor_Imm" %in% colnames(obj_imm@meta.data)) obj_imm$Minor_Imm <- NA_character_
+obj_imm$Minor_Imm[imm_cells] <- unname(imm_map[cl_ids])
+
+## (선택) 세부 서브타입 메모
+if (!"Subtype_Imm" %in% colnames(obj_imm@meta.data)) obj_imm$Subtype_Imm <- NA_character_
+obj_imm$Subtype_Imm[WhichCells(obj_imm, idents="0")]  <- "Th_naive/CM"
+obj_imm$Subtype_Imm[WhichCells(obj_imm, idents="16")] <- "Tc_cycling"
+
+cat("\n[Immune Mid/Minor 요약]\n"); print(table(obj_imm$Mid_Imm, obj_imm$Minor_Imm, useNA="ifany"))
+
+## (옵션) γδ/Tc/MAIT 비교 요약(클러스터 16)
+cat("\n[c16 panel compare]\n"); print(panel_compare_c16(obj_imm, c="16"), row.names = FALSE)
+
+## === 3) HC/PD 조건 컬럼 통일 (split UMAP용) ===
+if (!"Cond" %in% colnames(obj_imm@meta.data)) {
+  if ("group" %in% colnames(obj_imm@meta.data)) {
+    obj_imm$Cond <- factor(ifelse(grepl("^HC", obj_imm$group, ignore.case=TRUE), "HC",
+                           ifelse(grepl("^PD", obj_imm$group, ignore.case=TRUE), "PD", as.character(obj_imm$group))))
+  } else if ("sample_id" %in% colnames(obj_imm@meta.data)) {
+    obj_imm$Cond <- factor(ifelse(grepl("^HC", obj_imm$sample_id, ignore.case=TRUE), "HC",
+                           ifelse(grepl("^PD", obj_imm$sample_id, ignore.case=TRUE), "PD", "UNK")))
+  } else {
+    obj_imm$Cond <- factor("UNK")
+  }
+}
+
+## (옵션) HC vs PD 시각화
+# DimPlot(obj_imm, reduction="umap", group.by="Minor_Imm", split.by="Cond",
+#         ncol=2, pt.size=0.2, label=FALSE) +
+#   ggtitle("Immune-only UMAP — HC vs PD")
+
+## === 4) Immune 라벨을 전체 통합 객체(obj)로 복사 & 시각화 ===
+common <- intersect(colnames(obj), colnames(obj_imm))
+if (!"Mid_Imm" %in% colnames(obj@meta.data))   obj$Mid_Imm   <- NA_character_
+if (!"Minor_Imm" %in% colnames(obj@meta.data)) obj$Minor_Imm <- NA_character_
+obj$Mid_Imm[common]   <- obj_imm$Mid_Imm[common]
+obj$Minor_Imm[common] <- obj_imm$Minor_Imm[common]
+
+## Major 없으면 보완(Immune만 우선)
+if (!"Major" %in% colnames(obj@meta.data)) {
+  obj$Major <- NA_character_
+  obj$Major[!is.na(obj$Mid_Imm)] <- "Immune"
+}
+
+cat("\n[복사 확인] NA in Mid_Imm:", sum(is.na(obj$Mid_Imm)), 
+    "| NA in Minor_Imm:", sum(is.na(obj$Minor_Imm)), "\n")
+
+## (옵션) 전체 UMAP 시각화
+# p_major <- DimPlot(obj, reduction="umap", group.by="Major", label=TRUE, repel=TRUE) + ggtitle("Major")
+# p_mid   <- DimPlot(obj, reduction="umap", group.by="Mid_Imm", label=TRUE, repel=TRUE, na.value="grey80") + ggtitle("Mid_Imm")
+# p_minor <- DimPlot(obj, reduction="umap", group.by="Minor_Imm", label=TRUE, repel=TRUE, na.value="grey80") + ggtitle("Minor_Imm")
+# p_major + p_mid + p_minor
+
+## === 5) 저장 ===
+saveRDS(obj_imm, "integrated_immune_subset.rds")
+saveRDS(obj,     "integrated_fixed_umap.rds")
+cat("업데이트 저장 완료: integrated_immune_subset.rds / integrated_fixed_umap.rds\n")
