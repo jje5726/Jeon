@@ -1,0 +1,474 @@
+getwd()
+setwd("/home/jje5726/99/JJE/NDvsWD")
+
+#######################################################
+library(readxl)
+library(dplyr)
+
+## 1) 불러오기
+fn <- "plasma_Mouse_L1308.xlsx"
+raw <- read_xlsx(fn)
+
+# 2) 시트 확인 
+sheets <- excel_sheets(fn)
+cat("[시트 목록] ", paste(sheets, collapse = " | "), "\n")
+sheet_use <- sheets[1]
+cat("[사용 시트] ", sheet_use, "\n")
+
+# 3) 원본 그대로 읽어서 구조 파악 (헤더 가정 없이 col_names = FALSE)
+raw <- read_xlsx(fn, sheet = sheet_use, col_names = FALSE)
+
+# 4) 크기(행/열) 확인
+cat("[원본 차원] 행:", nrow(raw), " / 열:", ncol(raw), "\n")
+
+# 5) 상단 5행 x 좌측 10열만 미리보기 (헤더 패턴/샘플명/컨트롤 행 확인용)
+print(as.data.frame(raw[1:min(5, nrow(raw)), 1:min(10, ncol(raw)) ]))
+
+# 6) 첫 열에 POS/NEG 같은 컨트롤이 있는지 러프 체크
+first_col <- toupper(as.character(raw[[1]]))
+pos_hit <- which(grepl("^POS[- ]?AVE", first_col))
+neg_hit <- which(grepl("^NEG[- ]?AVE", first_col))
+cat("[컨트롤 탐지] POS-Ave 행:", ifelse(length(pos_hit)>0, pos_hit[1], NA),
+    " / Neg-Ave 행:", ifelse(length(neg_hit)>0, neg_hit[1], NA), "\n")
+
+
+## [섹션2] 헤더 지정 + 숫자형 변환 + 구조 확인 --------------------------
+library(dplyr)
+library(tidyr)
+library(tidyselect)
+
+# 1) 1행을 헤더로 사용
+hdr <- as.character(unlist(raw[1, ]))
+dat <- raw[-1, ]
+colnames(dat) <- hdr
+
+# 2) 열 이름/차원 확인
+cat("[컬럼명]\n"); print(colnames(dat))
+cat("\n[차원] 행:", nrow(dat), " / 열:", ncol(dat), "\n")
+
+# 3) 샘플 컬럼 지정 (필요 시 여기서 수정)
+samples_ND <- c("Nor1","Nor4","Nor9")
+samples_WD <- c("WD2","WD4","WD7")
+sample_cols <- c(samples_ND, samples_WD)
+
+# 4) 숫자형으로 변환 
+to_numeric <- function(x){
+  as.numeric(gsub(",", "", as.character(x)))
+}
+dat[, sample_cols] <- lapply(dat[, sample_cols, drop=FALSE], to_numeric)
+
+# 5) 타깃/지표 열 이름 정리
+if ("Target" %in% colnames(dat)) dat$Target <- as.character(dat$Target)
+if ("No."    %in% colnames(dat)) dat$`No.`   <- as.integer(to_numeric(dat$`No.`))
+
+# 6) 중복 타깃 존재 여부 체크
+dup_n <- sum(duplicated(dat$Target))
+cat("\n[중복 Target 개수] ", dup_n, "\n")
+
+# 7) 샘플/그룹 확인용 스냅샷
+cat("\n[상단 5행 미리보기]\n")
+print(as.data.frame(dat[1:min(5, nrow(dat)), c("No.","Target", sample_cols)]))
+
+# 8) NA 비율 간단 확인
+na_rate <- colSums(is.na(dat[, sample_cols])) / nrow(dat)
+cat("\n[샘플별 NA 비율]\n"); print(round(na_rate, 4))
+
+## expr: Target + 6개 샘플만 추출
+expr <- dplyr::select(dat, Target, tidyselect::all_of(sample_cols))
+
+## 확인
+cat("\n[expr 차원] 행:", nrow(expr), " / 열:", ncol(expr), "\n")
+print(utils::head(expr, 3))
+str(expr)
+
+######### log2
+## [섹션3] 그룹 정보 부여 + log2 변환 확인/적용 + QC ------------------
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# 1) 그룹 정보 지정
+group_info <- data.frame(
+  Sample = c("Nor1","Nor4","Nor9","WD2","WD4","WD7"),
+  Group  = c("ND","ND","ND","WD","WD","WD")
+)
+print(group_info)
+
+# 2) 로그 스케일 여부 간단 확인 (평균값 범위로 추정)
+expr_only <- expr[, -1]
+summary_vals <- summary(as.numeric(unlist(expr_only)))
+cat("\n[원시 값 범위]\n"); print(summary_vals)
+
+# 3) log2 변환 필요 여부 판단
+if (max(expr_only, na.rm=TRUE) > 100) {
+  cat("\nlog2 변환 수행 중...\n")
+  expr_log2 <- expr
+  expr_log2[, -1] <- log2(expr_only + 1)
+} else {
+  cat("\n이미 log 스케일로 보임 (log2 변환 생략)\n")
+  expr_log2 <- expr
+}
+
+# 4) 샘플별 분포 QC (박스플롯)
+expr_long <- expr_log2 %>%
+  pivot_longer(-Target, names_to="Sample", values_to="Value") %>%
+  left_join(group_info, by="Sample")
+
+ggplot(expr_long, aes(x=Sample, y=Value, fill=Group)) +
+  geom_boxplot(outlier.size=0.5) +
+  theme_bw(base_size=12) +
+  scale_fill_manual(values=c("ND"="skyblue","WD"="tomato")) +
+  labs(title="Sample-wise expression distribution (after log2)",
+       y="log2 intensity", x="Sample")
+
+# 5) log2 변환 결과 확인용 평균값 비교
+cat("\n[샘플별 평균(log2 scale)]\n")
+expr_log2[, -1] %>%
+  summarise(across(everything(), mean, na.rm=TRUE)) %>%
+  print()
+
+
+
+
+####################################################################################
+
+# 1. 디자인 매트릭스 (ND vs WD)
+group <- factor(c(rep("ND",3), rep("WD",3)))
+design <- model.matrix(~0 + group)
+colnames(design) <- levels(group)
+
+# 2. log2 데이터 행렬
+mat <- as.matrix(expr_log2[, -1])
+rownames(mat) <- expr_log2$Target
+
+# 3. limma fitting
+fit <- lmFit(mat, design)
+contrast.matrix <- makeContrasts(WD - ND, levels = design)
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+# 4. 결과 테이블 (res)
+res <- topTable(fit2, adjust="fdr", number=Inf)
+head(res)
+
+
+
+############## DEPs volcano plot
+library(ggplot2)
+library(ggrepel)
+library(scales)
+
+#
+create_volcano_plot <- function(res,
+                                lfc_cut = 1,
+                                p_cut   = 0.05,
+                                label_top = 10,  # 각 방향(Up/Down) 라벨 개수. 모두 표시하려면 Inf
+                                title = "Volcano plot: WD vs ND") {
+  
+  # 1) 입력 표준화
+  genes <- rownames(res)
+  if (is.null(genes)) {
+    if (!"gene" %in% names(res)) stop("res에 rownames나 gene 컬럼이 필요합니다.")
+    genes <- res$gene
+  }
+  data <- data.frame(
+    gene      = genes,
+    log2FC    = res$logFC,
+    p_value   = res$P.Value,
+    stringsAsFactors = FALSE
+  ) %>%
+    mutate(
+      neg_log10_p = -log10(p_value),
+      Significance = dplyr::case_when(
+        p_value < p_cut & log2FC >=  lfc_cut ~ "Up",
+        p_value < p_cut & log2FC <= -lfc_cut ~ "Down",
+        TRUE ~ "NotSignif"
+      )
+    )
+  
+  # 2) 라벨링 대상 (각 방향에서 p-value 가장 작은 것 상위 N개)
+  sig <- dplyr::filter(data, Significance != "NotSignif")
+  top_up <- sig %>% dplyr::filter(Significance == "Up")   %>% dplyr::arrange(p_value) %>% dplyr::slice_head(n = label_top)
+  top_dn <- sig %>% dplyr::filter(Significance == "Down") %>% dplyr::arrange(p_value) %>% dplyr::slice_head(n = label_top)
+  significant_genes <- dplyr::bind_rows(top_up, top_dn)
+  
+  # 3) 플롯
+  p <- ggplot(data, aes(x = log2FC, y = neg_log10_p, fill = Significance)) +
+    geom_point(alpha = 0.8, size = 2, shape = 21, color = "black") +
+    scale_fill_manual(values = c("Up" = "red", "Down" = "blue", "NotSignif" = "grey70")) +
+    geom_vline(xintercept = c(-lfc_cut, lfc_cut), col = "black", linetype = "dashed") +
+    geom_hline(yintercept = -log10(p_cut), col = "black", linetype = "dashed") +
+    geom_label_repel(
+      data = subset(significant_genes, Significance == "Up"),
+      aes(label = gene),
+      box.padding = 0.5, point.padding = 0.5,
+      segment.color = 'grey50', max.overlaps = Inf,
+      fontface = 'bold', size = 4, fill = alpha('red', 0.1)
+    ) +
+    geom_label_repel(
+      data = subset(significant_genes, Significance == "Down"),
+      aes(label = gene),
+      box.padding = 0.5, point.padding = 0.5,
+      segment.color = 'grey50', max.overlaps = Inf,
+      fontface = 'bold', size = 4, fill = alpha('blue', 0.1)
+    ) +
+    labs(title = title, x = "log2 Fold Change", y = "-log10(p-value)", fill = NULL) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      axis.title = element_text(face = "bold", size = 14),
+      axis.text  = element_text(face = "bold", size = 12),
+      legend.position = "top"
+    )
+  
+  return(p)
+}
+# ---- 여기까지가 함수 정의 ----
+
+res$gene <- rownames(res)  # 선택 사항
+
+
+v <- create_volcano_plot(
+  res,
+  lfc_cut = 1,
+  p_cut = 0.05,
+  label_top = 10,
+  title = "Volcano plot: WD vs ND"
+)
+print(v)
+
+
+
+
+################### list
+## [섹션5] Up/Down 리스트 추출 ---------------------------------------
+# 기준 설정
+lfc_cut <- 1
+p_cut   <- 0.05
+
+# Up/Down 필터
+up_genes <- res %>%
+  filter(logFC >= lfc_cut & P.Value < p_cut) %>%
+  arrange(P.Value)
+down_genes <- res %>%
+  filter(logFC <= -lfc_cut & P.Value < p_cut) %>%
+  arrange(P.Value)
+
+# 개수 확인
+cat("\n[Up 단백질 개수]:", nrow(up_genes))
+cat("\n[Down 단백질 개수]:", nrow(down_genes), "\n")
+
+# 상위 10개 미리보기
+cat("\n[Up 상위 10개]\n"); print(head(up_genes, 10))
+cat("\n[Down 상위 10개]\n"); print(head(down_genes, 10))
+
+#################################################################
+
+## 히트맵 -----------------------------------------------
+library(pheatmap)
+
+# 1. 상위 DEPs 30개 선택 (Up+Down 통합 기준)
+top_genes <- c(head(rownames(up_genes), 15),
+               head(rownames(down_genes), 15))
+expr_mat <- as.data.frame(expr_log2)
+rownames(expr_mat) <- expr_mat$Target
+expr_mat <- expr_mat[, -1]
+expr_mat <- expr_mat[top_genes, ]
+
+# 2. 샘플 그룹 정보
+ann_col <- data.frame(Group = c(rep("ND",3), rep("WD",3)))
+rownames(ann_col) <- colnames(expr_mat)
+
+# 3. 히트맵 그리기
+pheatmap(expr_mat,
+         scale = "row",                      # 각 단백질 z-score 정규화
+         annotation_col = ann_col,           # 그룹 주석
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(100),
+         clustering_method = "complete",
+         fontsize_row = 6,
+         main = "Top DEPs heatmap (WD vs ND)")
+
+
+#####################b heat map
+
+#  유의 단백질만 필터
+res_df <- res %>% mutate(gene = rownames(res))
+dep_df <- res_df %>%
+  filter(abs(logFC) >= 1 & P.Value < 0.05)
+
+#  Up 먼저, Down 나중
+up_genes   <- dep_df %>% filter(logFC >= 1)  %>% arrange(desc(logFC)) %>% pull(gene)
+down_genes <- dep_df %>% filter(logFC <= -1) %>% arrange(logFC) %>% pull(gene)
+dep_genes  <- c(up_genes, down_genes)
+
+# 발현 행렬 추출 (log2 변환값)
+mat_dep <- expr_log2[dep_genes, ]
+
+# 샘플 순서: WD → ND (기존은 ND→WD)
+sample_order <- c("WD2", "WD4", "WD7", "Nor1", "Nor4", "Nor9")
+mat_dep <- mat_dep[, sample_order]
+
+# 그룹 annotation (WD, ND 표시)
+annotation_col <- data.frame(Group = factor(c(rep("WD", 3), rep("ND", 3)),
+                                            levels = c("ND", "WD")))
+rownames(annotation_col) <- sample_order
+
+# Heatmap
+pheatmap(mat_dep,
+         scale = "row",
+         cluster_rows = FALSE,  # 순서 고정 (Up 위, Down 아래)
+         cluster_cols = FALSE,  # 순서 고정 (WD → ND)
+         annotation_col = annotation_col,
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         main = "Significant DEPs (Up on top, Down on bottom)",
+         fontsize_row = 8,
+         fontsize_col = 12,
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(100),
+         angle_col = 45)
+
+
+
+
+
+############################## log fc 2
+# 기준 설정
+res_df <- res %>%
+  mutate(
+    gene = rownames(res),
+    log2FC = logFC,
+    p_value = P.Value,
+    neg_log10_p = -log10(P.Value),
+    Significance = case_when(
+      log2FC >= 2 & p_value < 0.05 ~ "Up",
+      log2FC <= -2 & p_value < 0.05 ~ "Down",
+      TRUE ~ "NotSignif"
+    )
+  )
+
+table(res_df$Significance)
+
+
+# Up 단백질 리스트 추출 (안전 버전)
+up_list <- res_df %>%
+  dplyr::filter(Significance == "Up") %>%
+  dplyr::arrange(desc(log2FC)) %>%
+  dplyr::select(gene, log2FC, P.Value, adj.P.Val)
+
+# 결과 출력
+print(up_list)
+
+
+#####################################################################
+library(AnnotationDbi)
+library(org.Mm.eg.db)
+
+# 키 타입 확인 (나중에 alias/GENENAME 매핑에 씀)
+keytypes(org.Mm.eg.db)
+# 섹션 1 — 현재 DEPs 이름 포맷 확인
+# DEPs에 gene 컬럼이 있으면 사용, 없으면 rownames 사용
+dep_names <- if ("gene" %in% names(DEPs)) DEPs$gene else rownames(DEPs)
+
+# 1) 기본 요약
+cat("총 단백질 수:", length(dep_names), "\n\n")
+print(head(dep_names, 20))
+
+# 2) 패턴 분석 (대문자/공백/하이픈 등)
+pattern_summary <- data.frame(
+  contains_space = str_detect(dep_names, " "),
+  contains_dash  = str_detect(dep_names, "-"),
+  all_uppercase  = str_detect(dep_names, "^[A-Z0-9]+$"),
+  starts_with_cap = str_detect(dep_names, "^[A-Z][a-z]+")
+) %>%
+  summarise(
+    with_space = sum(contains_space),
+    with_dash  = sum(contains_dash),
+    all_upper  = sum(all_uppercase),
+    title_case = sum(starts_with_cap)
+  )
+
+cat("\n[이름 패턴 요약]\n")
+print(pattern_summary)
+
+# 3) RayBiotech 스타일(공백/대문자 섞임) 일부 확인
+cat("\n[예시 이름 확인]\n")
+print(dep_names[str_detect(dep_names, " ") | str_detect(dep_names, "-")][1:10])
+
+
+
+# 섹션 2 — DB 기반 매핑 (org.Mm.eg.db)
+# 섹션 2-패치 — mapIds 안전 래퍼 + 매핑 함수 교체
+
+safe_mapIds <- function(keys, keytype, column = "SYMBOL") {
+  keys <- as.character(keys)
+  if (length(keys) == 0) return(setNames(character(0), character(0)))
+  tr <- try(AnnotationDbi::mapIds(org.Mm.eg.db,
+                                  keys = keys, keytype = keytype,
+                                  column = column, multiVals = "first"),
+            silent = TRUE)
+  if (inherits(tr, "try-error")) {
+    # 전부 무효 키면 NA로 채워서 반환
+    return(setNames(rep(NA_character_, length(keys)), keys))
+  }
+  # 반환된 이름과 입력 키 정렬
+  out <- rep(NA_character_, length(keys))
+  names(out) <- keys
+  out[names(tr)] <- unname(tr)
+  out
+}
+
+map_mouse_symbols_db <- function(x) {
+  x <- unique(as.character(x))
+  variants <- tibble::tibble(
+    original = x,
+    v_orig  = x,
+    v_upper = toupper(x),
+    v_clean = gsub("[^A-Za-z0-9]", "", x)  # 공백/하이픈 제거
+  )
+  
+  res <- tibble::tibble(original = x, SYMBOL = NA_character_, source = NA_character_)
+  
+  # 1) SYMBOL (이미 심볼일 수 있음: ACTG1 등)
+  idx <- is.na(res$SYMBOL)
+  if (any(idx)) {
+    hit <- safe_mapIds(variants$v_upper[idx], "SYMBOL")
+    res$SYMBOL[idx] <- hit
+    res$source[idx & !is.na(res$SYMBOL)] <- "SYMBOL"
+  }
+  
+  # 2) ALIAS (orig → upper → clean)
+  for (v in c("v_orig","v_upper","v_clean")) {
+    idx <- is.na(res$SYMBOL)
+    if (any(idx)) {
+      hit <- safe_mapIds(variants[[v]][idx], "ALIAS")
+      res$SYMBOL[idx] <- hit
+      res$source[idx & !is.na(res$SYMBOL)] <- paste0("ALIAS:", v)
+    }
+  }
+  
+  # 3) GENENAME (예: “Cathepsin G”, “Osteopontin” 등)
+  idx <- is.na(res$SYMBOL)
+  if (any(idx)) {
+    hit <- safe_mapIds(variants$v_orig[idx], "GENENAME")
+    res$SYMBOL[idx] <- hit
+    res$source[idx & !is.na(res$SYMBOL)] <- "GENENAME"
+  }
+  
+  # 4) MGI (드물게)
+  idx <- is.na(res$SYMBOL)
+  if (any(idx)) {
+    hit <- safe_mapIds(variants$v_orig[idx], "MGI")
+    res$SYMBOL[idx] <- hit
+    res$source[idx & !is.na(res$SYMBOL)] <- "MGI"
+  }
+  
+  res
+}
+dep_names <- if ("gene" %in% names(DEPs)) DEPs$gene else rownames(DEPs)
+map_res <- map_mouse_symbols_db(dep_names)
+
+cat("\n[매핑 성공/실패 개수]\n"); print(table(is.na(map_res$SYMBOL)))
+cat("\n[매핑 실패 목록]\n");     print(map_res$original[is.na(map_res$SYMBOL)])
+head(map_res, 12)
