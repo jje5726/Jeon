@@ -1,0 +1,446 @@
+############################################################
+## Figure 2. PPI network of periodontitis-core genes
+## Updated: KEGG modules fixed to Module 1, 2, 3
+############################################################
+
+if (!requireNamespace("STRINGdb", quietly = TRUE)) BiocManager::install("STRINGdb")
+
+pkgs_fig2 <- c("igraph", "ggraph", "tidygraph", "ggnewscale", "forcats")
+for (p in pkgs_fig2) {
+  if (!requireNamespace(p, quietly = TRUE)) install.packages(p)
+}
+
+library(STRINGdb)
+library(igraph)
+library(ggraph)
+library(tidygraph)
+library(ggnewscale)
+library(patchwork)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(tidyverse)
+library(forcats)
+
+outdir2 <- "Periodontitis_Figure2_results"
+dir.create(outdir2, showWarnings = FALSE, recursive = TRUE)
+
+theme_pub <- theme(
+  plot.title = element_text(size = 12, face = "bold"),
+  axis.title.x = element_text(size = 12, face = "bold"),
+  axis.title.y = element_text(size = 12, face = "bold"),
+  axis.text = element_text(size = 10, color = "black"),
+  legend.title = element_text(size = 11, face = "bold"),
+  legend.text = element_text(size = 10)
+)
+
+ppi_input <- common_deg %>%
+  mutate(
+    SYMBOL = as.character(SYMBOL),
+    direction_simple = case_when(
+      direction == "Common Up" ~ "Up",
+      direction == "Common Down" ~ "Down",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  filter(!is.na(SYMBOL), SYMBOL != "") %>%
+  distinct(SYMBOL, direction_simple) %>%
+  as.data.frame()
+
+string_db <- STRINGdb$new(
+  version = "11.5",
+  species = 9606,
+  score_threshold = 400,
+  input_directory = ""
+)
+
+mapped <- string_db$map(
+  my_data_frame = ppi_input,
+  my_data_frame_id_col_names = "SYMBOL",
+  removeUnmappedRows = TRUE
+)
+
+ppi_edges_raw <- string_db$get_interactions(mapped$STRING_id)
+
+ppi_edges <- ppi_edges_raw %>%
+  as.data.frame() %>%
+  filter(from %in% mapped$STRING_id, to %in% mapped$STRING_id) %>%
+  left_join(
+    mapped %>% select(STRING_id, from_symbol = SYMBOL),
+    by = c("from" = "STRING_id")
+  ) %>%
+  left_join(
+    mapped %>% select(STRING_id, to_symbol = SYMBOL),
+    by = c("to" = "STRING_id")
+  ) %>%
+  filter(!is.na(from_symbol), !is.na(to_symbol)) %>%
+  distinct(from_symbol, to_symbol, combined_score)
+
+ppi_edges_for_graph <- ppi_edges %>%
+  rename(
+    from = from_symbol,
+    to = to_symbol,
+    weight = combined_score
+  ) %>%
+  select(from, to, weight) %>%
+  filter(!is.na(from), !is.na(to)) %>%
+  distinct()
+
+ppi_nodes <- mapped %>%
+  select(name = SYMBOL, direction_simple) %>%
+  distinct() %>%
+  filter(name %in% unique(c(ppi_edges_for_graph$from, ppi_edges_for_graph$to)))
+
+g <- graph_from_data_frame(
+  d = ppi_edges_for_graph,
+  vertices = ppi_nodes,
+  directed = FALSE
+)
+
+g <- simplify(
+  g,
+  remove.multiple = TRUE,
+  remove.loops = TRUE,
+  edge.attr.comb = list(weight = "max")
+)
+
+g <- delete_vertices(g, V(g)[degree(g) == 0])
+
+V(g)$degree <- degree(g)
+V(g)$betweenness <- betweenness(g)
+V(g)$closeness <- closeness(g)
+
+set.seed(123)
+cl <- cluster_louvain(g, weights = E(g)$weight)
+V(g)$module <- as.character(membership(cl))
+
+node_metrics <- tibble(
+  SYMBOL = V(g)$name,
+  direction = V(g)$direction_simple,
+  degree = V(g)$degree,
+  betweenness = V(g)$betweenness,
+  closeness = V(g)$closeness,
+  module = as.character(V(g)$module)
+) %>%
+  arrange(desc(degree))
+ls()
+edge_df <- as_data_frame(g, what = "edges")
+
+module_summary <- node_metrics %>%
+  group_by(module) %>%
+  summarise(
+    n_genes = n(),
+    mean_degree = mean(degree),
+    max_degree = max(degree),
+    hub_gene = SYMBOL[which.max(degree)],
+    up_genes = sum(direction == "Up"),
+    down_genes = sum(direction == "Down"),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_genes)) %>%
+  mutate(
+    module_label = paste0("Module ", module),
+    module_label_n = paste0("Module ", module, " (n=", n_genes, ")")
+  )
+
+print(module_summary)
+
+############################################################
+## 핵심 변경: Figure 2B/D에서 사용할 모듈을 1,2,3으로 고정
+############################################################
+
+target_modules <- c("1", "2", "3")
+
+target_modules <- target_modules[
+  target_modules %in% unique(node_metrics$module)
+]
+
+############################################################
+## Panel A
+############################################################
+
+tg <- as_tbl_graph(g)
+
+hub_labels <- node_metrics %>%
+  slice_max(degree, n = 12) %>%
+  pull(SYMBOL)
+
+p2A <- ggraph(tg, layout = "fr") +
+  geom_edge_link(
+    aes(width = weight),
+    alpha = 0.25,
+    color = "grey60",
+    show.legend = FALSE
+  ) +
+  geom_node_point(
+    aes(size = degree, color = direction_simple),
+    alpha = 0.9
+  ) +
+  geom_node_text(
+    aes(label = ifelse(name %in% hub_labels, name, "")),
+    repel = TRUE,
+    size = 3,
+    fontface = "bold",
+    max.overlaps = Inf
+  ) +
+  scale_color_manual(values = c(
+    "Up" = "#E64B35",
+    "Down" = "#4DBBD5"
+  )) +
+  scale_size_continuous(range = c(2, 8)) +
+  labs(
+    title = "A. Full PPI network of common DEGs",
+    color = NULL,
+    size = "Degree"
+  ) +
+  theme_void(base_size = 11) +
+  theme_pub +
+  theme(legend.position = "right")
+
+############################################################
+## Panel B: Module 1, 2, 3 subnetwork
+############################################################
+
+target_module_genes <- node_metrics %>%
+  filter(module %in% target_modules) %>%
+  pull(SYMBOL)
+
+g_target <- induced_subgraph(g, vids = V(g)[name %in% target_module_genes])
+tg_target <- as_tbl_graph(g_target)
+
+target_hub_labels <- node_metrics %>%
+  filter(module %in% target_modules) %>%
+  group_by(module) %>%
+  slice_max(degree, n = 5) %>%
+  ungroup() %>%
+  pull(SYMBOL)
+
+p2B <- ggraph(tg_target, layout = "fr") +
+  geom_edge_link(
+    alpha = 0.25,
+    color = "grey60"
+  ) +
+  geom_node_point(
+    aes(size = degree, color = module),
+    alpha = 0.9
+  ) +
+  geom_node_text(
+    aes(label = ifelse(name %in% target_hub_labels, name, "")),
+    repel = TRUE,
+    size = 3,
+    fontface = "bold",
+    max.overlaps = Inf
+  ) +
+  scale_size_continuous(range = c(2, 8)) +
+  labs(
+    title = "B. PPI subnetwork of Modules 1–3",
+    color = "Module",
+    size = "Degree"
+  ) +
+  theme_void(base_size = 11) +
+  theme_pub +
+  theme(legend.position = "right")
+
+############################################################
+## Panel C
+############################################################
+
+module_summary_plot <- module_summary %>%
+  arrange(desc(n_genes)) %>%
+  mutate(
+    module_label_n = factor(
+      module_label_n,
+      levels = rev(module_label_n)
+    )
+  )
+
+p2C <- ggplot(
+  module_summary_plot,
+  aes(
+    x = module_label_n,
+    y = n_genes,
+    fill = module
+  )
+) +
+  geom_col(width = 0.75) +
+  geom_text(
+    aes(label = paste0("Hub: ", hub_gene)),
+    hjust = -0.05,
+    size = 3.5,
+    fontface = "bold"
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.18))
+  ) +
+  labs(
+    title = "C. PPI module size and hub genes",
+    x = NULL,
+    y = "Number of genes"
+  ) +
+  theme_classic(base_size = 11) +
+  theme_pub +
+  theme(legend.position = "none")
+
+############################################################
+## Module KEGG for Modules 1,2,3
+############################################################
+
+run_module_kegg <- function(module_id) {
+  
+  module_id <- as.character(module_id)
+  
+  genes <- node_metrics %>%
+    mutate(module = as.character(module)) %>%
+    filter(module == module_id) %>%
+    pull(SYMBOL)
+  
+  entrez <- bitr(
+    genes,
+    fromType = "SYMBOL",
+    toType = "ENTREZID",
+    OrgDb = org.Hs.eg.db
+  ) %>%
+    distinct(SYMBOL, ENTREZID)
+  
+  if (nrow(entrez) < 3) return(NULL)
+  
+  ekegg <- enrichKEGG(
+    gene = unique(entrez$ENTREZID),
+    organism = "hsa",
+    pAdjustMethod = "BH",
+    pvalueCutoff = 0.05
+  )
+  
+  if (is.null(ekegg) || nrow(as.data.frame(ekegg)) == 0) return(NULL)
+  
+  ekegg <- setReadable(
+    ekegg,
+    OrgDb = org.Hs.eg.db,
+    keyType = "ENTREZID"
+  )
+  
+  as.data.frame(ekegg) %>%
+    mutate(module = module_id)
+}
+
+module_kegg_df <- purrr::map_dfr(target_modules, run_module_kegg)
+
+############################################################
+## Panel D
+## x-axis = Gene count, color = adjusted P value
+############################################################
+
+if (!is.null(module_kegg_df) && nrow(module_kegg_df) > 0) {
+  
+  plot_kegg_df <- module_kegg_df %>%
+    mutate(
+      module = factor(module, levels = target_modules),
+      module_label = paste0("Module ", module)
+    ) %>%
+    group_by(module_label) %>%
+    slice_min(p.adjust, n = 5) %>%
+    ungroup() %>%
+    mutate(
+      module_label = factor(
+        module_label,
+        levels = paste0("Module ", target_modules)
+      ),
+      Description = stringr::str_wrap(Description, width = 35)
+    ) %>%
+    group_by(module_label) %>%
+    mutate(
+      Description = forcats::fct_reorder(
+        Description,
+        Count,
+        .desc = FALSE
+      )
+    ) %>%
+    ungroup()
+  
+  p2D <- ggplot(
+    plot_kegg_df,
+    aes(
+      x = Count,
+      y = Description,
+      size = Count,
+      color = p.adjust
+    )
+  ) +
+    geom_point(alpha = 0.9) +
+    facet_wrap(~ module_label, scales = "free_y") +
+    scale_color_gradient(
+      low = "#E64B35",
+      high = "#4DBBD5",
+      name = "Adjusted\nP value"
+    ) +
+    scale_size_continuous(
+      range = c(3, 8),
+      name = "Gene count"
+    ) +
+    labs(
+      title = "D. KEGG enrichment of Modules 1–3",
+      x = "Gene count",
+      y = NULL
+    ) +
+    theme_classic(base_size = 11) +
+    theme_pub +
+    theme(
+      strip.text = element_text(size = 10, face = "bold"),
+      legend.position = "right"
+    )
+  
+} else {
+  
+  p2D <- ggplot() +
+    annotate(
+      "text",
+      x = 0,
+      y = 0,
+      label = "No significant KEGG terms in Modules 1–3",
+      size = 4
+    ) +
+    labs(title = "D. KEGG enrichment of Modules 1–3") +
+    theme_void() +
+    theme_pub
+}
+
+############################################################
+## Final Figure 2
+############################################################
+
+fig2 <-
+  (p2A + p2B) /
+  (p2C + p2D) +
+  plot_layout(
+    widths = c(1, 1),
+    heights = c(1.05, 1)
+  )
+
+fig2
+
+############################################################
+## Save
+############################################################
+
+write.csv(node_metrics, file.path(outdir2, "PPI_node_metrics.csv"), row.names = FALSE)
+write.csv(edge_df, file.path(outdir2, "PPI_edges.csv"), row.names = FALSE)
+write.csv(module_summary, file.path(outdir2, "PPI_module_summary.csv"), row.names = FALSE)
+write.csv(module_kegg_df, file.path(outdir2, "Modules_1_2_3_KEGG_results.csv"), row.names = FALSE)
+
+ggsave(
+  filename = file.path(outdir2, "Figure2_PPI_network_Modules_1_2_3.pdf"),
+  plot = fig2,
+  width = 16,
+  height = 12,
+  units = "in",
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = file.path(outdir2, "Figure2_PPI_network_Modules_1_2_3.png"),
+  plot = fig2,
+  width = 16,
+  height = 12,
+  units = "in",
+  dpi = 300
+)
