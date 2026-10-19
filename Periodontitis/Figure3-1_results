@@ -1,0 +1,107 @@
+############################################################
+## Update Figure 3 layout
+## Remove E panel and arrange D/F/G in one row
+############################################################
+
+############################################################
+## 1. Panel G. Relative module rewiring
+## Color = Periodontitis - Healthy
+## Module labels simplified
+############################################################
+
+module_focus_summary <- score_focus_module %>%
+  group_by(condition, celltype_manual, module) %>%
+  summarise(
+    mean_score = mean(score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+module_focus_delta <- module_focus_summary %>%
+  tidyr::pivot_wider(
+    names_from = condition,
+    values_from = mean_score
+  ) %>%
+  mutate(
+    delta_PD_vs_H = Periodontitis - Healthy,
+    label_delta = ifelse(
+      abs(delta_PD_vs_H) >= 0.02,
+      sprintf("%.2f", delta_PD_vs_H),
+      ""
+    )
+  )
+
+
+
+p3G <- ggplot(
+  module_focus_delta,
+  aes(
+    x = module,
+    y = celltype_manual,
+    fill = delta_PD_vs_H
+  )
+) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(
+    aes(label = label_delta),
+    size = 3.5,
+    fontface = "bold"
+  ) +
+  scale_fill_gradient2(
+    low = "#4DBBD5",
+    mid = "white",
+    high = "#E64B35",
+    midpoint = 0,
+    limits = c(-0.10, 0.10),
+    oob = scales::squish,
+    name = "Δ score\nPD - Healthy"
+  ) +
+  labs(
+    title = "G. Cell-type-specific module rewiring",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_classic(base_size = 12) +
+  theme_pub +
+  theme(
+    axis.text.x = element_text(face = "bold"),
+    axis.text.y = element_text(face = "bold")
+  )
+
+############################################################
+## 2. Final Figure 3 layout
+## Row 1: A + B
+## Row 2: C full width
+## Row 3: D + F + G
+############################################################
+
+fig3 <- 
+  (p3A + p3B + plot_layout(widths = c(1.1, 0.9))) /
+  p3C /
+  (p3D + p3F + p3G + plot_layout(widths = c(0.9, 1.4, 0.9))) +
+  plot_layout(
+    heights = c(1.05, 0.85, 1.35)
+  )
+
+fig3
+
+############################################################
+## 3. Save updated Figure 3
+############################################################
+
+ggsave(
+  filename = file.path(outdir3, "Figure3_scRNA_validation_H_vs_PD_DFG_row.pdf"),
+  plot = fig3,
+  width = 18,
+  height = 14,
+  units = "in",
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = file.path(outdir3, "Figure3_scRNA_validation_H_vs_PD_DFG_row.png"),
+  plot = fig3,
+  width = 18,
+  height = 14,
+  units = "in",
+  dpi = 300
+)
