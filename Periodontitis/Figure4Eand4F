@@ -1,0 +1,1044 @@
+############################################
+#########  Figure 4E and 4F ################
+## 1. Figure 4E top 5 pathways
+## sender -> receiver contributes to each pathway
+
+
+top5_E_axis <- key_pathway_delta %>%
+  filter(delta_strength > 0) %>%
+  arrange(desc(delta_strength)) %>%
+  slice_head(n = 5)
+
+top5_E_axis
+
+
+
+
+top5_E_sender_receiver_detail_axis_matched <- pathway_all_df %>%
+  mutate(
+    axis = case_when(
+      source == "Endothelial cell" ~ "Endothelial outgoing",
+      source == "Neutrophil" ~ "Neutrophil outgoing",
+      target == "Neutrophil" ~ "Neutrophil incoming",
+      target == "T cell" ~ "T cell incoming",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  inner_join(
+    top5_E_axis %>% select(pathway_name, axis),
+    by = c("pathway_name", "axis")
+  ) %>%
+  group_by(pathway_name, axis, source, target, condition) %>%
+  summarise(
+    strength = sum(strength, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = condition,
+    values_from = strength,
+    values_fill = 0
+  ) %>%
+  mutate(
+    delta_strength = Periodontitis - Healthy
+  ) %>%
+  filter(delta_strength > 0) %>%
+  arrange(desc(delta_strength))
+
+print(top5_E_sender_receiver_detail_axis_matched, n = 40)
+
+
+############################################################
+## 6. Panel E. Pathway breakdown of top increased communications
+## Based on Figure 4D sender -> receiver delta
+############################################################
+
+## 1) Figure 4D에서 증가한 sender -> receiver 상위 6개 선택
+top_n_edges_E <- 6
+
+top_edges_E <- mat_diff_long %>%
+  filter(delta_strength > 0) %>%
+  arrange(desc(delta_strength)) %>%
+  slice_head(n = top_n_edges_E) %>%
+  mutate(
+    axis = paste0(as.character(sender), " → ", as.character(receiver))
+  )
+
+top_edges_E
+
+
+## 2) pathway별 sender -> receiver strength 계산
+pathway_edge_delta <- pathway_all_df %>%
+  group_by(condition, pathway_name, source, target) %>%
+  summarise(
+    pathway_strength = sum(strength, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = condition,
+    values_from = pathway_strength,
+    values_fill = 0
+  ) %>%
+  mutate(
+    delta_strength = Periodontitis - Healthy,
+    axis = paste0(as.character(source), " → ", as.character(target))
+  ) %>%
+  semi_join(
+    top_edges_E %>% select(axis),
+    by = "axis"
+  )
+
+
+############################################################
+## Pair-specific Top5 pathways from top increased communications
+############################################################
+
+## 1) Figure 4D 기준: 증가한 sender -> receiver pair 상위 6개
+top_pairs_use <- mat_diff_long %>%
+  filter(delta_strength > 0) %>%
+  arrange(desc(delta_strength)) %>%
+  slice_head(n = 6) %>%
+  mutate(
+    pair = paste0(as.character(sender), " → ", as.character(receiver))
+  ) %>%
+  select(sender, receiver, pair, pair_delta = delta_strength)
+
+top_pairs_use
+
+
+## 2) pathway별 sender -> receiver strength 계산
+pair_pathway_delta <- pathway_all_df %>%
+  group_by(condition, pathway_name, source, target) %>%
+  summarise(
+    pathway_strength = sum(strength, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = condition,
+    values_from = pathway_strength,
+    values_fill = 0
+  ) %>%
+  mutate(
+    delta_strength = Periodontitis - Healthy,
+    pair = paste0(as.character(source), " → ", as.character(target))
+  ) %>%
+  inner_join(
+    top_pairs_use %>% select(pair, pair_delta),
+    by = "pair"
+  )
+
+
+## 3) 각 sender -> receiver pair별 Top5 pathway
+pair_top5_pathways <- pair_pathway_delta %>%
+  filter(delta_strength > 0) %>%
+  group_by(pair) %>%
+  arrange(desc(delta_strength), .by_group = TRUE) %>%
+  slice_head(n = 5) %>%
+  ungroup() %>%
+  arrange(desc(pair_delta), pair, desc(delta_strength))
+
+pair_top5_pathways %>% print(n = 50)
+
+
+###########################################
+
+############################################################
+## Panel E. Pathway rewiring in key cells
+## Include outgoing and incoming axes for Endothelial, Neutrophil, and T cell
+############################################################
+
+key_cells <- c("Endothelial cell", "Neutrophil", "T cell")
+
+key_pathway_axis <- bind_rows(
+  pathway_all_df %>%
+    filter(source == "Endothelial cell") %>%
+    mutate(axis = "Endothelial outgoing"),
+  
+  pathway_all_df %>%
+    filter(target == "Endothelial cell") %>%
+    mutate(axis = "Endothelial incoming"),
+  
+  pathway_all_df %>%
+    filter(source == "Neutrophil") %>%
+    mutate(axis = "Neutrophil outgoing"),
+  
+  pathway_all_df %>%
+    filter(target == "Neutrophil") %>%
+    mutate(axis = "Neutrophil incoming"),
+  
+  pathway_all_df %>%
+    filter(source == "T cell") %>%
+    mutate(axis = "T cell outgoing"),
+  
+  pathway_all_df %>%
+    filter(target == "T cell") %>%
+    mutate(axis = "T cell incoming")
+) %>%
+  group_by(condition, pathway_name, axis) %>%
+  summarise(
+    pathway_strength = sum(strength, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+key_pathway_delta <- key_pathway_axis %>%
+  pivot_wider(
+    names_from = condition,
+    values_from = pathway_strength,
+    values_fill = 0
+  ) %>%
+  mutate(
+    delta_strength = Periodontitis - Healthy
+  )
+
+axis_order <- c(
+  "Endothelial outgoing",
+  "Endothelial incoming",
+  "Neutrophil outgoing",
+  "Neutrophil incoming",
+  "T cell outgoing",
+  "T cell incoming"
+)
+
+top_n_pathway <- 12
+
+top_pathways_use <- key_pathway_delta %>%
+  group_by(pathway_name) %>%
+  summarise(
+    max_delta = max(delta_strength, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(max_delta > 0) %>%
+  arrange(desc(max_delta)) %>%
+  slice_head(n = top_n_pathway) %>%
+  pull(pathway_name)
+
+p4E <- key_pathway_delta %>%
+  filter(pathway_name %in% top_pathways_use) %>%
+  mutate(
+    axis = factor(axis, levels = axis_order),
+    pathway_name = factor(pathway_name, levels = rev(top_pathways_use))
+  ) %>%
+  ggplot(
+    aes(
+      x = axis,
+      y = pathway_name,
+      fill = delta_strength
+    )
+  ) +
+  geom_tile(color = "white", linewidth = 0.35) +
+  geom_text(
+    aes(label = sprintf("%.3f", delta_strength)),
+    size = 2.3,
+    fontface = "bold"
+  ) +
+  scale_fill_gradient2(
+    low = "#4DBBD5",
+    mid = "white",
+    high = "#E64B35",
+    midpoint = 0,
+    name = "Δ pathway\nstrength\nPD - Healthy"
+  ) +
+  labs(
+    title = "E. Pathway rewiring in key communication cells",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_classic(base_size = 12) +
+  theme_pub +
+  theme(
+    axis.text.x = element_text(angle = 40, hjust = 1, face = "bold"),
+    axis.text.y = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+p4E
+
+
+
+############################################################
+## 6. New Panel E. Pathway breakdown of major increased routes
+############################################################
+
+## 1) Figure 4D 기반으로 볼 sender -> receiver route 지정
+route_use <- tibble::tribble(
+  ~source, ~target,
+  "Endothelial cell", "T cell",
+  "Endothelial cell", "Endothelial cell",
+  "Neutrophil",       "Endothelial cell",
+  "Endothelial cell", "Neutrophil",
+  "Neutrophil",       "Neutrophil"
+) %>%
+  mutate(
+    route = paste0(source, " → ", target)
+  )
+
+## 2) pathway별 route strength 계산
+route_pathway_delta <- pathway_all_df %>%
+  group_by(condition, pathway_name, source, target) %>%
+  summarise(
+    pathway_strength = sum(strength, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = condition,
+    values_from = pathway_strength,
+    values_fill = 0
+  ) %>%
+  mutate(
+    delta_strength = Periodontitis - Healthy,
+    route = paste0(as.character(source), " → ", as.character(target))
+  ) %>%
+  inner_join(
+    route_use %>% select(route),
+    by = "route"
+  )
+
+## 3) 선택 route들에서 증가량이 큰 pathway 상위 10개
+top_n_pathway_E <- 10
+
+top_pathways_E <- route_pathway_delta %>%
+  group_by(pathway_name) %>%
+  summarise(
+    max_delta = max(delta_strength, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(max_delta > 0) %>%
+  arrange(desc(max_delta)) %>%
+  slice_head(n = top_n_pathway_E) %>%
+  pull(pathway_name)
+
+## 4) New Figure 4E
+p4E <- route_pathway_delta %>%
+  filter(pathway_name %in% top_pathways_E) %>%
+  mutate(
+    route = factor(route, levels = route_use$route),
+    pathway_name = factor(pathway_name, levels = rev(top_pathways_E))
+  ) %>%
+  ggplot(
+    aes(
+      x = route,
+      y = pathway_name,
+      fill = delta_strength
+    )
+  ) +
+  geom_tile(color = "white", linewidth = 0.35) +
+  geom_text(
+    aes(label = sprintf("%.3f", delta_strength)),
+    size = 2.5,
+    fontface = "bold"
+  ) +
+  scale_fill_gradient2(
+    low = "#4DBBD5",
+    mid = "white",
+    high = "#E64B35",
+    midpoint = 0,
+    name = "Δ pathway\nstrength\nPD - Healthy"
+  ) +
+  labs(
+    title = "E. Pathway breakdown of major increased communication routes",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_classic(base_size = 12) +
+  theme_pub +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    axis.text.y = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+p4E
+
+
+############################################################
+## New Panel F. Top LR pairs underlying major increased routes
+############################################################
+
+## 1) Healthy와 PD에서 route별 LR strength 계산
+lr_H <- comm_H_mod %>%
+  group_by(
+    pathway_name, source, target,
+    ligand, receptor
+  ) %>%
+  summarise(
+    prob_H = sum(prob, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+lr_PD <- comm_PD_mod %>%
+  group_by(
+    pathway_name, source, target,
+    ligand, receptor
+  ) %>%
+  summarise(
+    prob_PD = sum(prob, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+## PD에서 route별 LR strength 계산
+lr_PD <- comm_PD_mod %>%
+  group_by(
+    pathway_name, source, target,
+    ligand, receptor
+  ) %>%
+  summarise(
+    prob_PD = sum(prob, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+lr_route_delta <- full_join(
+  lr_H,
+  lr_PD,
+  by = c(
+    "pathway_name", "source", "target",
+    "ligand", "receptor"
+  )
+) %>%
+  mutate(
+    prob_H = replace_na(prob_H, 0),
+    prob_PD = replace_na(prob_PD, 0),
+    delta_prob = prob_PD - prob_H,
+    route = paste0(source, " → ", target),
+    LR = paste0(ligand, " → ", receptor)
+  ) %>%
+  inner_join(
+    route_use %>% select(route),
+    by = "route"
+  ) %>%
+  filter(
+    pathway_name %in% top_pathways_E,
+    delta_prob > 0
+  )
+
+top_lr_route <- lr_route_delta %>%
+  group_by(route) %>%
+  arrange(desc(delta_prob), .by_group = TRUE) %>%
+  slice_head(n = 3) %>%
+  ungroup()
+
+top_lr_route
+
+p4F <- top_lr_route %>%
+  mutate(
+    route = factor(route, levels = route_use$route),
+    LR = paste0(ligand, " → ", receptor)
+  ) %>%
+  ggplot(
+    aes(
+      x = route,
+      y = reorder(LR, delta_prob),
+      size = delta_prob,
+      color = pathway_name
+    )
+  ) +
+  geom_point(alpha = 0.9) +
+  theme_classic()
+
+p4F
+
+route_pathway_delta %>%
+  filter(pathway_name %in% top_pathways_E) %>%
+  arrange(desc(delta_strength)) %>%
+  select(pathway_name, source, target, delta_strength)
+
+
+
+lr_key_pathways <- full_join(
+  lr_H,
+  lr_PD,
+  by = c(
+    "pathway_name", "source", "target",
+    "ligand", "receptor"
+  )
+) %>%
+  mutate(
+    prob_H = replace_na(prob_H, 0),
+    prob_PD = replace_na(prob_PD, 0),
+    delta_prob = prob_PD - prob_H
+  ) %>%
+  filter(
+    pathway_name %in% c(
+      "COLLAGEN", "LAMININ", "APP",
+      "SELE", "MHC-I", "CXCL"
+    )
+  ) %>%
+  arrange(pathway_name, desc(abs(delta_prob)))
+
+lr_key_pathways %>%
+  select(
+    pathway_name, source, target,
+    ligand, receptor,
+    prob_H, prob_PD, delta_prob
+  ) %>%
+  print(n = Inf)
+lr_key_focus <- lr_key_pathways %>%
+  filter(
+    (pathway_name %in% c("COLLAGEN", "LAMININ", "APP", "SELE", "MHC-I") &
+       source == "Endothelial cell") |
+      (pathway_name == "CXCL" & source == "Neutrophil") |
+      (pathway_name == "MHC-I" & source == "T cell")
+  ) %>%
+  group_by(pathway_name, source, target) %>%
+  arrange(desc(abs(delta_prob)), .by_group = TRUE) %>%
+  slice_head(n = 3) %>%
+  ungroup() %>%
+  select(
+    pathway_name, source, target,
+    ligand, receptor,
+    prob_H, prob_PD, delta_prob
+  ) %>%
+  arrange(pathway_name, source, desc(abs(delta_prob)))
+
+
+lr_top_candidates <- lr_key_focus %>%
+  filter(
+    pathway_name %in% c(
+      "APP", "COLLAGEN", "CXCL", "LAMININ", "MHC-I"
+    )
+  ) %>%
+  group_by(pathway_name) %>%
+  arrange(desc(abs(delta_prob)), .by_group = TRUE) %>%
+  slice_head(n = 5) %>%
+  mutate(rank = row_number()) %>%
+  ungroup() %>%
+  select(
+    pathway_name, rank,
+    source, target,
+    ligand, receptor,
+    prob_H, prob_PD, delta_prob
+  )
+
+print(lr_top_candidates, n = Inf)
+
+
+
+
+
+
+############################################################
+## Figure 4F
+## Representative ligand–receptor rewiring
+## APP/COLLAGEN/CXCL/LAMININ: top 3
+## MHC-I: top 5
+############################################################
+
+lr_4F <- lr_key_focus %>%
+  filter(
+    pathway_name %in% c(
+      "APP", "COLLAGEN", "CXCL", "LAMININ", "MHC-I"
+    )
+  ) %>%
+  group_by(pathway_name) %>%
+  arrange(desc(abs(delta_prob)), .by_group = TRUE) %>%
+  mutate(rank = row_number()) %>%
+  filter(
+    (pathway_name == "MHC-I" & rank <= 5) |
+      (pathway_name != "MHC-I" & rank <= 3)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    cell_pair = paste(source, "→", target),
+    LR_pair = paste(ligand, receptor, sep = "–")
+  )
+
+############################################################
+## Check selected interactions
+############################################################
+lr_4F <- lr_key_focus %>%
+  filter(
+    pathway_name %in% c(
+      "APP", "COLLAGEN", "CXCL", "LAMININ", "MHC-I"
+    )
+  ) %>%
+  group_by(pathway_name) %>%
+  arrange(desc(abs(delta_prob)), .by_group = TRUE) %>%
+  mutate(rank = row_number()) %>%
+  filter(
+    (pathway_name == "MHC-I" & rank <= 5) |
+      (pathway_name != "MHC-I" & rank <= 3)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    cell_pair = paste(source, "→", target),
+    LR_pair = paste(ligand, receptor, sep = "–")
+  )
+
+
+lr_4F %>%
+  select(
+    pathway_name, rank,
+    source, target,
+    ligand, receptor,
+    prob_H, prob_PD, delta_prob
+  ) %>%
+  print(n = Inf)
+
+############################################################
+## Bubble plot
+############################################################
+
+p4F <- ggplot(
+  lr_4F,
+  aes(
+    x = cell_pair,
+    y = LR_pair,
+    size = abs(delta_prob),
+    fill = delta_prob
+  )
+) +
+  geom_point(
+    shape = 21,
+    color = "black",
+    stroke = 0.3
+  ) +
+  facet_grid(
+    pathway_name ~ .,
+    scales = "free_y",
+    space = "free_y"
+  ) +
+  scale_fill_gradient2(
+    low = "#4DBBD5",
+    mid = "white",
+    high = "#E64B35",
+    midpoint = 0,
+    limits = c(-0.015, 0.015),
+    breaks = c(-0.015, 0, 0.015),
+    name = "Δ probability\nPD - Healthy"
+  ) +
+  scale_size_continuous(
+    name = "|Δ probability|",
+    range = c(3, 8),
+    breaks = c(0.002, 0.005, 0.010, 0.015)
+  ) +
+  labs(
+    title = "F. Representative ligand–receptor rewiring",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_classic(base_size = 12) +
+  theme_pub +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      face = "bold"
+    ),
+    axis.text.y = element_text(size = 10),
+    strip.text.y = element_text(
+      face = "bold",
+      angle = 0
+    ),
+    strip.background = element_blank()
+  )
+
+p4F
+lr_4F %>%
+  select(
+    pathway_name, rank,
+    source, target,
+    ligand, receptor,
+    prob_H, prob_PD, delta_prob
+  ) %>%
+  arrange(pathway_name, rank) %>%
+  print(n = Inf)
+
+
+plot_kegg_df %>%
+  select(
+    module_label,
+    Description,
+    Count,
+    GeneRatio,
+    p.adjust,
+    geneID
+  ) %>%
+  arrange(module_label, p.adjust) %>%
+  print(n = Inf)
+
+
+
+
+
+
+
+# 1. 필요한 객체가 현재 환경에 있는지 확인
+exists("node_metrics")
+exists("module_summary")
+
+# 2. 객체 구조 확인
+if (exists("node_metrics")) {
+  cat("\n--- node_metrics ---\n")
+  print(dim(node_metrics))
+  print(colnames(node_metrics))
+  print(head(node_metrics))
+}
+
+if (exists("module_summary")) {
+  cat("\n--- module_summary ---\n")
+  print(dim(module_summary))
+  print(colnames(module_summary))
+  print(module_summary)
+}
+
+
+
+
+
+library(dplyr)
+
+top_genes_by_module <- node_metrics %>%
+  filter(module %in% c("1", "2", "3")) %>%
+  group_by(module) %>%
+  arrange(desc(degree), desc(betweenness), .by_group = TRUE) %>%
+  slice_head(n = 5) %>%
+  ungroup() %>%
+  select(
+    module,
+    SYMBOL,
+    direction,
+    degree,
+    betweenness,
+    closeness
+  )
+
+print(top_genes_by_module, n = Inf)
+
+
+
+
+module_genes_all <- node_metrics %>%
+  filter(module %in% c(1, 2, 3)) %>%
+  arrange(module, desc(degree)) %>%
+  select(
+    module,
+    SYMBOL,
+    direction,
+    degree,
+    betweenness,
+    closeness
+  )
+
+print(as.data.frame(module_genes_all), row.names = FALSE)
+
+
+
+getwd()
+setwd("/home/kang/God_Nas/jje5726/Periodontitis_Figure1_results")
+
+list.files()
+# KEGG 결과 불러오기
+up_kegg <- read.csv("Common_Up_KEGG.csv")
+down_kegg <- read.csv("Common_Down_KEGG.csv")
+
+# 크기와 column 확인
+dim(up_kegg)
+dim(down_kegg)
+
+names(up_kegg)
+names(down_kegg)
+
+# 전체 결과 출력
+up_kegg
+down_kegg
+
+
+up_go <- read.csv("Common_Up_GO_BP.csv")
+down_go <- read.csv("Common_Down_GO_BP.csv")
+
+dim(up_go)
+dim(down_go)
+
+names(up_go)
+names(down_go)
+
+up_go
+down_go
+
+
+common_deg <- read.csv("Common_DEG_logFC1_Pvalue005.csv")
+
+dim(common_deg)
+names(common_deg)
+head(common_deg)
+table(common_deg$direction)
+
+setwd("/home/kang/God_Nas/jje5726/Periodontitis_Figure2_results")
+module_kegg <- read.csv("Modules_1_2_3_KEGG_results.csv")
+
+dim(module_kegg)
+names(module_kegg)
+head(module_kegg, 20)
+table(module_kegg$module)
+
+
+
+
+# 각 module별 enrichment 결과 개수
+table(module_kegg$module)
+
+# Module 1 전체
+module_kegg[module_kegg$module == 1, 
+            c("Description", "GeneRatio", "p.adjust", "geneID")]
+
+# Module 2 전체
+module_kegg[module_kegg$module == 2, 
+            c("Description", "GeneRatio", "p.adjust", "geneID")]
+
+# Module 3 전체
+module_kegg[module_kegg$module == 3, 
+            c("Description", "GeneRatio", "p.adjust", "geneID")]
+
+
+
+
+setwd("/home/kang/God_Nas/jje5726/Periodontitis_Figure1_results")
+
+getwd()
+list.files()
+
+
+library(openxlsx)
+
+up_kegg <- read.csv("Common_Up_KEGG.csv", check.names = FALSE)
+down_kegg <- read.csv("Common_Down_KEGG.csv", check.names = FALSE)
+
+write.xlsx(
+  list(
+    Common_Up = up_kegg,
+    Common_Down = down_kegg
+  ),
+  file = "S1_Table_KEGG_pathway_enrichment_analysis_results.xlsx",
+  overwrite = TRUE
+)
+table(is.na(down_kegg$category))
+table(is.na(down_kegg$subcategory))
+setwd("/home/kang/God_Nas/jje5726/Periodontitis_Figure2_results")
+
+getwd()
+list.files()
+library(openxlsx)
+
+module_kegg <- read.csv(
+  "Modules_1_2_3_KEGG_results.csv",
+  check.names = FALSE
+)
+
+write.xlsx(
+  module_kegg,
+  file = "S2_Table_KEGG_pathway_enrichment_analysis_results_of_transcriptional_modules.xlsx",
+  overwrite = TRUE
+)
+file.exists(
+  "S2_Table_KEGG_pathway_enrichment_analysis_results_of_transcriptional_modules.xlsx"
+)
+
+
+
+
+
+colnames(seu_gse171213@meta.data)
+summary(
+  seu_gse171213@meta.data[, c(
+    "nCount_RNA",
+    "nFeature_RNA",
+    "percent.mt"
+  )]
+)
+seu_gse171213@meta.data %>%
+  group_by(sample) %>%
+  summarise(
+    n_cells = n(),
+    min_count = min(nCount_RNA),
+    max_count = max(nCount_RNA),
+    min_feature = min(nFeature_RNA),
+    max_feature = max(nFeature_RNA),
+    max_mt = max(percent.mt)
+  )
+
+
+
+
+table(seu_gse171213$condition)
+module_summary <- read.csv(
+  "/home/kang/God_Nas/jje5726/Periodontitis_Figure2_results/PPI_module_summary.csv"
+)
+
+module_summary
+
+
+
+############################################################
+## Check PPI network size
+############################################################
+
+setwd("/home/kang/God_Nas/jje5726/Periodontitis_Figure2_results")
+
+# 저장된 PPI 결과 불러오기
+ppi_edges_check <- read.csv("PPI_edges.csv")
+ppi_nodes_check <- read.csv("PPI_node_metrics.csv")
+
+# 구조 확인
+dim(ppi_edges_check)
+dim(ppi_nodes_check)
+
+names(ppi_edges_check)
+names(ppi_nodes_check)
+# Number of edges
+nrow(ppi_edges_check)
+
+# Number of nodes
+nrow(ppi_nodes_check)
+
+
+
+
+
+
+############################################################
+## Module 1–3 KEGG enrichment results 확인
+############################################################
+
+setwd("/home/kang/God_Nas/jje5726/Periodontitis_Figure2_results")
+
+module_kegg_check <- read.csv(
+  "Modules_1_2_3_KEGG_results.csv"
+)
+
+# 구조 및 열 이름
+dim(module_kegg_check)
+names(module_kegg_check)
+
+# 앞부분 확인
+head(module_kegg_check, 10)
+############################################################
+## Results 본문에 언급된 pathway의 실제 KEGG 수치 확인
+############################################################
+
+module_kegg_check %>%
+  dplyr::filter(
+    (module == 1 & Description %in% c(
+      "Cytokine-cytokine receptor interaction",
+      "IL-17 signaling pathway",
+      "Chemokine signaling pathway"
+    )) |
+      (module == 2 & Description %in% c(
+        "B cell receptor signaling pathway",
+        "Fc gamma R-mediated phagocytosis",
+        "Hematopoietic cell lineage",
+        "Phagosome"
+      )) |
+      (module == 3 & Description %in% c(
+        "Leukocyte transendothelial migration",
+        "JAK-STAT signaling pathway",
+        "Cytokine-cytokine receptor interaction"
+      ))
+  ) %>%
+  dplyr::select(
+    module,
+    Description,
+    GeneRatio,
+    Count,
+    pvalue,
+    p.adjust
+  ) %>%
+  dplyr::arrange(module, p.adjust)
+# 통계 관련 객체 이름 검색
+ls()[grepl(
+  "stat|test|pval|p.value|p_value|signif|global|interaction|strength",
+  ls(),
+  ignore.case = TRUE
+)]
+
+global_summary
+names(global_summary)
+str(global_summary)
+p4A$data
+p4B$data
+names(p4A$data)
+names(p4B$data)
+ls()[grepl("kegg|KEGG|enrich|up|down", ls(), ignore.case = TRUE)]
+############################################################
+## Figure 1G/H KEGG 결과 확인
+############################################################
+
+# Upregulated common DEGs
+dim(kegg_up)
+names(kegg_up)
+head(kegg_up, 10)
+
+# Downregulated common DEGs
+dim(kegg_down)
+names(kegg_down)
+head(kegg_down, 10)
+
+
+kegg_up %>%
+  dplyr::filter(
+    Description %in% c(
+      "Cytokine-cytokine receptor interaction",
+      "Viral protein interaction with cytokine and cytokine receptor",
+      "Chemokine signaling pathway",
+      "IL-17 signaling pathway",
+      "Leishmaniasis"
+    )
+  ) %>%
+  dplyr::select(
+    Description,
+    GeneRatio,
+    Count,
+    pvalue,
+    p.adjust
+  ) %>%
+  dplyr::arrange(p.adjust)
+kegg_down %>%
+  dplyr::filter(
+    grepl(
+      "cornified",
+      Description,
+      ignore.case = TRUE
+    )
+  ) %>%
+  dplyr::select(
+    Description,
+    GeneRatio,
+    Count,
+    pvalue,
+    p.adjust
+  )
+
+
+common_deg_supp <- common_deg %>%
+  left_join(
+    deg10334 %>%
+      select(
+        SYMBOL,
+        GSE10334_logFC = logFC,
+        GSE10334_adj.P.Val = adj.P.Val
+      ),
+    by = "SYMBOL"
+  ) %>%
+  left_join(
+    deg16134 %>%
+      select(
+        SYMBOL,
+        GSE16134_logFC = logFC,
+        GSE16134_adj.P.Val = adj.P.Val
+      ),
+    by = "SYMBOL"
+  )
+
+dim(common_deg_supp)
+head(common_deg_supp)
+openxlsx::write.xlsx(
+  list(
+    "DEG_summary" = deg_summary,
+    "Common_DEGs" = common_deg_supp
+  ),
+  file = file.path(
+    fig1_dir,
+    "S1_Table_common_differentially_expressed_genes.xlsx"
+  ),
+  overwrite = TRUE
+)
+getwd()
+
+
