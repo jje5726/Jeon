@@ -1,0 +1,649 @@
+############################################################
+## Periodontitis Figure 1 integrated pipeline
+## GSE10334 + GSE16134 bulk microarray
+## DEG + Common DEG + GO/KEGG + Patchwork Figure
+############################################################
+
+############################################################
+## 0. Packages
+############################################################
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+
+pkgs_bioc <- c(
+  "GEOquery", "limma", "Biobase",
+  "clusterProfiler", "org.Hs.eg.db", "enrichplot"
+)
+
+pkgs_cran <- c(
+  "tidyverse", "ggrepel", "pheatmap",
+  "patchwork", "RColorBrewer", "grid"
+)
+
+for (p in pkgs_bioc) {
+  if (!requireNamespace(p, quietly = TRUE)) BiocManager::install(p)
+}
+
+for (p in pkgs_cran) {
+  if (!requireNamespace(p, quietly = TRUE)) install.packages(p)
+}
+
+library(GEOquery)
+library(limma)
+library(Biobase)
+library(tidyverse)
+library(ggrepel)
+library(pheatmap)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(patchwork)
+library(RColorBrewer)
+library(grid)
+
+############################################################
+## 1. Output directory
+############################################################
+
+outdir <- "Periodontitis_Figure1_results"
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+############################################################
+## 2. Download GEO datasets
+############################################################
+
+gse10334 <- getGEO("GSE10334", GSEMatrix = TRUE)
+gse16134 <- getGEO("GSE16134", GSEMatrix = TRUE)
+
+eset10334 <- gse10334[[1]]
+eset16134 <- gse16134[[1]]
+
+expr10334 <- exprs(eset10334)
+expr16134 <- exprs(eset16134)
+
+pd10334 <- pData(eset10334)
+pd16134 <- pData(eset16134)
+
+fd10334 <- fData(eset10334)
+fd16134 <- fData(eset16134)
+
+############################################################
+## 3. Group annotation
+############################################################
+
+pd10334$group <- ifelse(
+  grepl("^Diseased", pd10334$`Gingival tissue phenotype:ch1`),
+  "Periodontitis",
+  "Healthy"
+)
+
+pd16134$group <- ifelse(
+  grepl("^Diseased", pd16134$`gingival tissue phenotype:ch1`),
+  "Periodontitis",
+  "Healthy"
+)
+
+pd10334$group <- factor(pd10334$group, levels = c("Healthy", "Periodontitis"))
+pd16134$group <- factor(pd16134$group, levels = c("Healthy", "Periodontitis"))
+
+print(table(pd10334$group))
+print(table(pd16134$group))
+
+############################################################
+## 4. Probe ID -> Gene Symbol using fData()
+############################################################
+
+convert_probe_to_symbol_from_fdata <- function(expr_mat, fdata) {
+  
+  anno <- fdata %>%
+    as.data.frame() %>%
+    dplyr::select(ID, `Gene Symbol`) %>%
+    dplyr::rename(
+      PROBEID = ID,
+      SYMBOL_raw = `Gene Symbol`
+    ) %>%
+    dplyr::mutate(
+      SYMBOL = stringr::str_split(SYMBOL_raw, " /// ", simplify = TRUE)[, 1],
+      SYMBOL = trimws(SYMBOL)
+    ) %>%
+    dplyr::filter(
+      !is.na(SYMBOL),
+      SYMBOL != "",
+      SYMBOL != "---"
+    ) %>%
+    dplyr::select(PROBEID, SYMBOL) %>%
+    dplyr::distinct()
+  
+  expr_df <- expr_mat %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("PROBEID") %>%
+    dplyr::inner_join(anno, by = "PROBEID") %>%
+    dplyr::select(-PROBEID) %>%
+    dplyr::group_by(SYMBOL) %>%
+    dplyr::summarise(
+      dplyr::across(where(is.numeric), ~ mean(.x, na.rm = TRUE)),
+      .groups = "drop"
+    ) %>%
+    tibble::column_to_rownames("SYMBOL") %>%
+    as.matrix()
+  
+  return(expr_df)
+}
+
+expr10334_symbol <- convert_probe_to_symbol_from_fdata(expr10334, fd10334)
+expr16134_symbol <- convert_probe_to_symbol_from_fdata(expr16134, fd16134)
+
+expr10334_symbol <- expr10334_symbol[, rownames(pd10334)]
+expr16134_symbol <- expr16134_symbol[, rownames(pd16134)]
+
+stopifnot(all(colnames(expr10334_symbol) == rownames(pd10334)))
+stopifnot(all(colnames(expr16134_symbol) == rownames(pd16134)))
+
+print(dim(expr10334_symbol))
+print(dim(expr16134_symbol))
+
+############################################################
+## 5. limma DEG analysis
+## cutoff: P.Value < 0.05 and |logFC| >= 1
+############################################################
+
+run_limma_deg <- function(expr_mat, meta, group_col = "group") {
+  
+  group <- factor(meta[[group_col]], levels = c("Healthy", "Periodontitis"))
+  
+  design <- model.matrix(~ 0 + group)
+  colnames(design) <- levels(group)
+  
+  fit <- lmFit(expr_mat, design)
+  
+  contrast <- makeContrasts(
+    Periodontitis_vs_Healthy = Periodontitis - Healthy,
+    levels = design
+  )
+  
+  fit2 <- contrasts.fit(fit, contrast)
+  fit2 <- eBayes(fit2)
+  
+  deg <- topTable(
+    fit2,
+    coef = "Periodontitis_vs_Healthy",
+    number = Inf,
+    adjust.method = "BH"
+  ) %>%
+    tibble::rownames_to_column("SYMBOL") %>%
+    dplyr::mutate(
+      regulation = dplyr::case_when(
+        P.Value < 0.05 & logFC >= 1  ~ "Up",
+        P.Value < 0.05 & logFC <= -1 ~ "Down",
+        TRUE ~ "NS"
+      )
+    )
+  
+  return(deg)
+}
+
+deg10334 <- run_limma_deg(expr10334_symbol, pd10334)
+deg16134 <- run_limma_deg(expr16134_symbol, pd16134)
+
+print(table(deg10334$regulation))
+print(table(deg16134$regulation))
+
+############################################################
+## 6. Common DEG
+############################################################
+
+up10334 <- deg10334 %>% filter(regulation == "Up") %>% pull(SYMBOL)
+down10334 <- deg10334 %>% filter(regulation == "Down") %>% pull(SYMBOL)
+
+up16134 <- deg16134 %>% filter(regulation == "Up") %>% pull(SYMBOL)
+down16134 <- deg16134 %>% filter(regulation == "Down") %>% pull(SYMBOL)
+
+common_up <- intersect(up10334, up16134)
+common_down <- intersect(down10334, down16134)
+
+common_deg <- tibble(
+  SYMBOL = c(common_up, common_down),
+  direction = c(
+    rep("Common Up", length(common_up)),
+    rep("Common Down", length(common_down))
+  )
+)
+
+deg_summary <- tibble(
+  Dataset = c(
+    "GSE10334", "GSE10334",
+    "GSE16134", "GSE16134",
+    "Common", "Common"
+  ),
+  Direction = c("Up", "Down", "Up", "Down", "Up", "Down"),
+  N = c(
+    length(up10334),
+    length(down10334),
+    length(up16134),
+    length(down16134),
+    length(common_up),
+    length(common_down)
+  )
+)
+
+print(deg_summary)
+
+############################################################
+## 7. PCA plot
+############################################################
+
+plot_pca <- function(expr_mat, meta, title) {
+  
+  pca <- prcomp(t(expr_mat), scale. = TRUE)
+  
+  pca_df <- as.data.frame(pca$x[, 1:2]) %>%
+    rownames_to_column("sample") %>%
+    left_join(
+      meta %>% rownames_to_column("sample"),
+      by = "sample"
+    )
+  
+  pc_var <- round(100 * summary(pca)$importance[2, 1:2], 1)
+  
+  ggplot(pca_df, aes(PC1, PC2, color = group)) +
+    geom_point(size = 2.8, alpha = 0.9) +
+    stat_ellipse(linewidth = 0.7, linetype = "dashed") +
+    scale_color_manual(values = c(
+      "Healthy" = "#4DBBD5",
+      "Periodontitis" = "#E64B35"
+    )) +
+    labs(
+      title = title,
+      x = paste0("PC1 (", pc_var[1], "%)"),
+      y = paste0("PC2 (", pc_var[2], "%)"),
+      color = NULL
+    ) +
+    theme_classic(base_size = 11) +
+    theme(
+      plot.title = element_text(face = "bold", size = 12),
+      axis.title = element_text(face = "bold"),
+      axis.text = element_text(color = "black"),
+      legend.title = element_blank()
+    )
+}
+
+p1A <- plot_pca(expr10334_symbol, pd10334, "A. PCA of GSE10334")
+p1B <- plot_pca(expr16134_symbol, pd16134, "B. PCA of GSE16134")
+
+############################################################
+## 8. Volcano plot
+############################################################
+
+plot_volcano <- function(deg, title) {
+  
+  label_genes <- deg %>%
+    filter(regulation != "NS") %>%
+    arrange(P.Value) %>%
+    slice_head(n = 8)
+  
+  ggplot(deg, aes(logFC, -log10(P.Value), color = regulation)) +
+    geom_point(size = 1.1, alpha = 0.65) +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "grey40") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey40") +
+    geom_text_repel(
+      data = label_genes,
+      aes(label = SYMBOL),
+      size = 3,
+      max.overlaps = 20,
+      box.padding = 0.3
+    ) +
+    scale_color_manual(values = c(
+      "Up" = "#E64B35",
+      "Down" = "#4DBBD5",
+      "NS" = "grey80"
+    )) +
+    labs(
+      title = title,
+      x = "log2 Fold Change",
+      y = "-log10(P value)",
+      color = NULL
+    ) +
+    theme_classic(base_size = 11) +
+    theme(
+      plot.title = element_text(face = "bold", size = 12),
+      axis.title = element_text(face = "bold"),
+      axis.text = element_text(color = "black"),
+      legend.title = element_blank()
+    )
+}
+
+p1C <- plot_volcano(deg10334, "C. Volcano plot of GSE10334")
+p1D <- plot_volcano(deg16134, "D. Volcano plot of GSE16134")
+
+############################################################
+## 9. DEG summary plot
+############################################################
+
+deg_summary <- deg_summary %>%
+  mutate(
+    Dataset = factor(Dataset, levels = c("GSE10334", "GSE16134", "Common")),
+    Direction = factor(Direction, levels = c("Up", "Down"))
+  )
+
+p1E <- ggplot(deg_summary, aes(Dataset, N, fill = Direction)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.65) +
+  geom_text(
+    aes(label = N),
+    position = position_dodge(width = 0.75),
+    vjust = -0.3,
+    size = 3.3,
+    fontface = "bold"
+  ) +
+  scale_fill_manual(values = c(
+    "Up" = "#E64B35",
+    "Down" = "#4DBBD5"
+  )) +
+  labs(
+    title = "E. Number of DEGs",
+    x = NULL,
+    y = "Number of DEGs",
+    fill = NULL
+  ) +
+  theme_classic(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 12),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(color = "black", face = "bold"),
+    legend.title = element_blank()
+  )
+
+############################################################
+## 10. Common DEG heatmap
+############################################################
+
+common_genes <- common_deg$SYMBOL
+
+common_genes <- common_genes[
+  common_genes %in% rownames(expr10334_symbol) &
+    common_genes %in% rownames(expr16134_symbol)
+]
+
+expr10334_common <- expr10334_symbol[common_genes, , drop = FALSE]
+expr16134_common <- expr16134_symbol[common_genes, , drop = FALSE]
+
+expr_common_merged <- cbind(expr10334_common, expr16134_common)
+
+anno_col <- bind_rows(
+  pd10334 %>%
+    rownames_to_column("sample") %>%
+    mutate(Dataset = "GSE10334") %>%
+    select(sample, group, Dataset),
+  pd16134 %>%
+    rownames_to_column("sample") %>%
+    mutate(Dataset = "GSE16134") %>%
+    select(sample, group, Dataset)
+) %>%
+  column_to_rownames("sample")
+
+anno_col <- anno_col[colnames(expr_common_merged), , drop = FALSE]
+
+anno_row <- common_deg %>%
+  filter(SYMBOL %in% rownames(expr_common_merged)) %>%
+  distinct(SYMBOL, direction) %>%
+  column_to_rownames("SYMBOL")
+
+anno_row <- anno_row[rownames(expr_common_merged), , drop = FALSE]
+
+ann_colors <- list(
+  group = c(
+    "Healthy" = "#4DBBD5",
+    "Periodontitis" = "#E64B35"
+  ),
+  Dataset = c(
+    "GSE10334" = "#00A087",
+    "GSE16134" = "#3C5488"
+  ),
+  direction = c(
+    "Common Up" = "#E64B35",
+    "Common Down" = "#4DBBD5"
+  )
+)
+
+expr_common_scaled <- t(scale(t(expr_common_merged)))
+expr_common_scaled[is.na(expr_common_scaled)] <- 0
+expr_common_scaled[expr_common_scaled > 2] <- 2
+expr_common_scaled[expr_common_scaled < -2] <- -2
+
+pheat <- pheatmap(
+  expr_common_scaled,
+  annotation_col = anno_col,
+  annotation_row = anno_row,
+  annotation_colors = ann_colors,
+  show_colnames = FALSE,
+  show_rownames = FALSE,
+  cluster_cols = TRUE,
+  cluster_rows = TRUE,
+  color = colorRampPalette(rev(brewer.pal(n = 11, name = "RdBu")))(100),
+  main = "F. Heatmap of common DEGs",
+  fontsize = 8,
+  border_color = NA,
+  silent = TRUE
+)
+
+p1F <- wrap_elements(full = pheat$gtable)
+
+############################################################
+## 11. GO + KEGG enrichment
+############################################################
+
+run_enrich_all <- function(gene_symbols) {
+  
+  entrez <- bitr(
+    gene_symbols,
+    fromType = "SYMBOL",
+    toType = "ENTREZID",
+    OrgDb = org.Hs.eg.db
+  ) %>%
+    distinct(SYMBOL, ENTREZID)
+  
+  ego <- enrichGO(
+    gene          = unique(entrez$ENTREZID),
+    OrgDb         = org.Hs.eg.db,
+    keyType       = "ENTREZID",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    qvalueCutoff  = 0.2,
+    readable      = TRUE
+  )
+  
+  ekegg <- enrichKEGG(
+    gene          = unique(entrez$ENTREZID),
+    organism      = "hsa",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05
+  )
+  
+  ekegg <- setReadable(
+    ekegg,
+    OrgDb = org.Hs.eg.db,
+    keyType = "ENTREZID"
+  )
+  
+  return(list(
+    entrez = entrez,
+    GO = ego,
+    KEGG = ekegg
+  ))
+}
+
+enrich_up <- run_enrich_all(common_up)
+enrich_down <- run_enrich_all(common_down)
+
+ego_up <- enrich_up$GO
+ego_down <- enrich_down$GO
+
+kegg_up <- enrich_up$KEGG
+kegg_down <- enrich_down$KEGG
+
+############################################################
+## 12. KEGG dotplot
+############################################################
+
+plot_enrich_dot <- function(enrich_obj, title, n = 5) {
+  
+  enrich_df <- as.data.frame(enrich_obj)
+  
+  if (is.null(enrich_obj) || nrow(enrich_df) == 0) {
+    return(
+      ggplot() +
+        annotate("text", x = 0, y = 0, label = "No significant terms", size = 4) +
+        labs(title = title) +
+        theme_void() +
+        theme(
+          plot.title = element_text(face = "bold", size = 12)
+        )
+    )
+  }
+  
+  dotplot(enrich_obj, showCategory = n) +
+    labs(title = title) +
+    theme(
+      plot.title = element_text(face = "bold", size = 12),
+      axis.title = element_text(face = "bold"),
+      axis.text.y = element_text(size = 8, color = "black"),
+      axis.text.x = element_text(color = "black"),
+      legend.title = element_text(face = "bold"),
+      legend.text = element_text(size = 8)
+    )
+}
+
+p1G <- plot_enrich_dot(
+  kegg_up,
+  "G. KEGG enrichment of common upregulated genes",
+  n = 5
+)
+
+p1H <- plot_enrich_dot(
+  kegg_down,
+  "H. KEGG enrichment of common downregulated genes",
+  n = 5
+)
+
+############################################################
+## 13. Clean duplicated legends
+############################################################
+
+p1A <- p1A + theme(legend.position = "none")
+p1C <- p1C + theme(legend.position = "none")
+
+p1B <- p1B + theme(
+  legend.position = "right",
+  legend.title = element_blank(),
+  legend.text = element_text(size = 9)
+)
+
+p1D <- p1D + theme(
+  legend.position = "right",
+  legend.title = element_blank(),
+  legend.text = element_text(size = 9)
+)
+
+p1E <- p1E + theme(
+  legend.position = "right",
+  legend.title = element_blank(),
+  legend.text = element_text(size = 9)
+)
+
+############################################################
+## 14. Final Figure 1 patchwork
+############################################################
+
+fig1 <- 
+  (
+    p1A + p1B +
+      plot_layout(widths = c(1, 1.08))
+  ) /
+  (
+    p1C + p1D +
+      plot_layout(widths = c(1, 1.08))
+  ) /
+  (
+    p1E + p1F +
+      plot_layout(widths = c(0.85, 1.15))
+  ) /
+  (
+    p1G + p1H +
+      plot_layout(widths = c(1, 1))
+  ) +
+  plot_layout(
+    heights = c(1, 1, 1.05, 1.2),
+    guides = "keep"
+  )
+
+fig1
+
+############################################################
+## 15. Save DEG / GO / KEGG / Figure
+############################################################
+
+write.csv(
+  deg10334,
+  file = file.path(outdir, "GSE10334_limma_DEG_results.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  deg16134,
+  file = file.path(outdir, "GSE16134_limma_DEG_results.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  common_deg,
+  file = file.path(outdir, "Common_DEG_logFC1_Pvalue005.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  deg_summary,
+  file = file.path(outdir, "DEG_summary.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  as.data.frame(ego_up),
+  file = file.path(outdir, "Common_Up_GO_BP.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  as.data.frame(ego_down),
+  file = file.path(outdir, "Common_Down_GO_BP.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  as.data.frame(kegg_up),
+  file = file.path(outdir, "Common_Up_KEGG.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  as.data.frame(kegg_down),
+  file = file.path(outdir, "Common_Down_KEGG.csv"),
+  row.names = FALSE
+)
+
+ggsave(
+  filename = file.path(outdir, "Figure1_Bulk_microarray_landscape_cleaned.pdf"),
+  plot = fig1,
+  width = 17,
+  height = 18,
+  units = "in",
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = file.path(outdir, "Figure1_Bulk_microarray_landscape_cleaned.png"),
+  plot = fig1,
+  width = 17,
+  height = 18,
+  units = "in",
+  dpi = 300
+)
