@@ -1,0 +1,582 @@
+############################################################
+## Figure 3. Single-cell validation of disease-associated modules
+## A. Annotated single-cell atlas
+## B. Cell-type composition
+## C. Module-specific disease-associated cell types
+## D. Cell-type-specific module changes
+## E. Module gene expression in representative driver cells
+############################################################
+
+library(Seurat)
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+library(rstatix)
+library(ggpubr)
+library(scales)
+
+outdir3 <- "Periodontitis_Figure3_results"
+dir.create(outdir3, showWarnings = FALSE, recursive = TRUE)
+
+theme_pub <- theme(
+  plot.title = element_text(size = 12, face = "bold"),
+  axis.title.x = element_text(size = 12, face = "bold"),
+  axis.title.y = element_text(size = 12, face = "bold"),
+  axis.text = element_text(size = 10, color = "black"),
+  legend.title = element_text(size = 11, face = "bold"),
+  legend.text = element_text(size = 10)
+)
+
+condition_cols <- c(
+  "Healthy" = "#4DBBD5",
+  "Periodontitis" = "#E64B35"
+)
+
+celltype_order <- c(
+  "Fibroblast",
+  "Epithelial cell",
+  "Endothelial cell",
+  "Pericyte",
+  "T cell",
+  "B cell",
+  "Plasma cell",
+  "Neutrophil",
+  "Monocyte/Macrophage",
+  "Mast cell",
+  "pDC",
+  "Cycling cell"
+)
+
+############################################################
+## 1. Prepare object
+############################################################
+
+seu_hp <- subset(
+  seu_gse171213,
+  subset = condition %in% c("Healthy", "Periodontitis")
+)
+
+seu_hp$condition <- factor(
+  as.character(seu_hp$condition),
+  levels = c("Healthy", "Periodontitis")
+)
+
+seu_hp$celltype_manual <- factor(
+  as.character(seu_hp$celltype_manual),
+  levels = celltype_order
+)
+
+meta_hp <- seu_hp@meta.data %>%
+  as.data.frame() %>%
+  filter(
+    !is.na(condition),
+    !is.na(celltype_manual)
+  )
+
+############################################################
+## 2. Panel A. Annotated single-cell atlas
+############################################################
+
+p3A <- DimPlot(
+  seu_hp,
+  reduction = "umap",
+  group.by = "celltype_manual",
+  label = TRUE,
+  repel = TRUE,
+  raster = TRUE
+) +
+  ggtitle("A. Annotated single-cell atlas") +
+  labs(color = "Cell type") +
+  theme_classic(base_size = 12) +
+  theme_pub +
+  theme(
+    legend.position = "right"
+  )
+
+############################################################
+## 3. Panel B. Cell-type composition
+############################################################
+
+composition_df <- meta_hp %>%
+  count(condition, sample, celltype_manual, name = "n") %>%
+  group_by(condition, sample) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup()
+
+composition_summary <- composition_df %>%
+  group_by(condition, celltype_manual) %>%
+  summarise(
+    mean_prop = mean(prop, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+p3B <- ggplot(
+  composition_summary,
+  aes(
+    x = condition,
+    y = mean_prop,
+    fill = celltype_manual
+  )
+) +
+  geom_col(width = 0.65) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "B. Cell-type composition",
+    x = NULL,
+    y = "Mean proportion",
+    fill = "Cell type"
+  ) +
+  theme_classic(base_size = 12) +
+  theme_pub +
+  theme(
+    axis.text.x = element_text(angle = 35, hjust = 1),
+    legend.position = "right"
+  )
+
+############################################################
+## 4. Prepare module score long dataframe
+############################################################
+
+module_score_long_cell <- meta_hp %>%
+  dplyr::select(
+    condition,
+    celltype_manual,
+    PPI_Module1_Score1,
+    PPI_Module2_Score1,
+    PPI_Module3_Score1
+  ) %>%
+  pivot_longer(
+    cols = starts_with("PPI_Module"),
+    names_to = "module",
+    values_to = "score"
+  ) %>%
+  mutate(
+    condition = factor(
+      as.character(condition),
+      levels = c("Healthy", "Periodontitis")
+    ),
+    celltype_manual = as.character(celltype_manual),
+    module = recode(
+      module,
+      "PPI_Module1_Score1" = "Module 1",
+      "PPI_Module2_Score1" = "Module 2",
+      "PPI_Module3_Score1" = "Module 3"
+    ),
+    module = factor(module, levels = c("Module 1", "Module 2", "Module 3"))
+  ) %>%
+  filter(
+    !is.na(condition),
+    !is.na(celltype_manual),
+    !is.na(score)
+  )
+
+############################################################
+## 5. Statistics and delta scores
+############################################################
+
+stat_module_cell <- module_score_long_cell %>%
+  group_by(module, celltype_manual) %>%
+  wilcox_test(score ~ condition) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+
+module_delta_cell <- module_score_long_cell %>%
+  group_by(condition, module, celltype_manual) %>%
+  summarise(
+    mean_score = mean(score, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = condition,
+    values_from = mean_score
+  ) %>%
+  mutate(
+    delta_PD_vs_H = Periodontitis - Healthy
+  )
+
+sig_cell_module <- stat_module_cell %>%
+  left_join(
+    module_delta_cell,
+    by = c("module", "celltype_manual")
+  ) %>%
+  filter(
+    p.adj < 0.05,
+    delta_PD_vs_H > 0
+  ) %>%
+  arrange(module, desc(delta_PD_vs_H))
+
+############################################################
+## 6. Panel C. Module-specific disease-associated cell types
+############################################################
+
+order_df <- sig_cell_module %>%
+  select(module, celltype_manual, delta_PD_vs_H) %>%
+  arrange(module, desc(delta_PD_vs_H)) %>%
+  group_by(module) %>%
+  mutate(
+    celltype_order = row_number(),
+    celltype_ordered = paste0(celltype_manual, "___", module)
+  ) %>%
+  ungroup()
+
+module_score_sig <- module_score_long_cell %>%
+  semi_join(
+    order_df,
+    by = c("module", "celltype_manual")
+  ) %>%
+  left_join(
+    order_df,
+    by = c("module", "celltype_manual")
+  ) %>%
+  mutate(
+    celltype_ordered = factor(
+      celltype_ordered,
+      levels = order_df$celltype_ordered
+    )
+  )
+
+ypos_df <- module_score_sig %>%
+  group_by(module, celltype_manual, celltype_ordered) %>%
+  summarise(
+    y.position = max(score, na.rm = TRUE) + 0.12,
+    .groups = "drop"
+  )
+
+stat_module_sig <- stat_module_cell %>%
+  semi_join(
+    order_df,
+    by = c("module", "celltype_manual")
+  ) %>%
+  left_join(
+    order_df,
+    by = c("module", "celltype_manual")
+  ) %>%
+  left_join(
+    ypos_df,
+    by = c("module", "celltype_manual", "celltype_ordered")
+  ) %>%
+  mutate(
+    xmin = celltype_ordered,
+    xmax = celltype_ordered,
+    p_label = p.adj.signif
+  )
+
+p3C <- ggplot(
+  module_score_sig,
+  aes(
+    x = celltype_ordered,
+    y = score,
+    fill = condition
+  )
+) +
+  geom_violin(
+    aes(group = interaction(celltype_ordered, condition)),
+    position = position_dodge(width = 0.85),
+    scale = "width",
+    trim = TRUE,
+    linewidth = 0.2
+  ) +
+  geom_boxplot(
+    aes(group = interaction(celltype_ordered, condition)),
+    position = position_dodge(width = 0.85),
+    width = 0.12,
+    outlier.shape = NA,
+    linewidth = 0.25
+  ) +
+  stat_pvalue_manual(
+    stat_module_sig,
+    label = "p_label",
+    xmin = "xmin",
+    xmax = "xmax",
+    y.position = "y.position",
+    tip.length = 0.01,
+    hide.ns = TRUE,
+    size = 3
+  ) +
+  facet_grid(
+    ~ module,
+    scales = "free_x",
+    space = "free_x"
+  ) +
+  scale_x_discrete(
+    labels = function(x) gsub("___.*$", "", x)
+  ) +
+  scale_fill_manual(values = condition_cols) +
+  labs(
+    title = "C. Module-specific disease-associated cell types",
+    x = NULL,
+    y = "Module score",
+    fill = NULL
+  ) +
+  theme_classic(base_size = 12) +
+  theme_pub +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(size = 11, face = "bold"),
+    legend.position = "right"
+  )
+
+############################################################
+## 7. Panel D. Cell-type-specific module changes
+############################################################
+
+module_delta_plot <- module_delta_cell %>%
+  mutate(
+    celltype_manual = factor(
+      celltype_manual,
+      levels = rev(celltype_order)
+    )
+  )
+
+p3D <- ggplot(
+  module_delta_plot,
+  aes(
+    x = module,
+    y = celltype_manual,
+    fill = delta_PD_vs_H
+  )
+) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  geom_text(
+    aes(label = sprintf("%.2f", delta_PD_vs_H)),
+    size = 3,
+    fontface = "bold"
+  ) +
+  scale_fill_gradient2(
+    low = "#4DBBD5",
+    mid = "white",
+    high = "#E64B35",
+    midpoint = 0,
+    limits = c(-0.10, 0.10),
+    oob = scales::squish,
+    name = "Δ score\nPD - Healthy"
+  ) +
+  labs(
+    title = "D. Cell-type-specific module changes in periodontitis",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_classic(base_size = 12) +
+  theme_pub +
+  theme(
+    axis.text.x = element_text(face = "bold"),
+    axis.text.y = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+############################################################
+## 8. Panel E. Representative driver-cell gene expression
+############################################################
+
+rep_driver_cells <- tibble::tribble(
+  ~module,    ~celltype_manual,
+  "Module 1", "Endothelial cell",
+  "Module 2", "Cycling cell",
+  "Module 3", "Plasma cell"
+) %>%
+  mutate(
+    module = factor(module, levels = c("Module 1", "Module 2", "Module 3"))
+  )
+
+top_n_genes <- 8
+
+module_gene_use <- module_gene_df %>%
+  filter(module %in% c("Module 1", "Module 2", "Module 3")) %>%
+  filter(SYMBOL %in% rownames(seu_hp)) %>%
+  group_by(module) %>%
+  slice_head(n = top_n_genes) %>%
+  ungroup()
+
+module_genes_use <- unique(module_gene_use$SYMBOL)
+
+expr_mat <- GetAssayData(
+  seu_hp,
+  assay = "RNA",
+  slot = "data"
+)
+
+expr_mat <- expr_mat[
+  module_genes_use,
+  rownames(meta_hp),
+  drop = FALSE
+]
+
+expr_long <- as.matrix(expr_mat) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("gene") %>%
+  pivot_longer(
+    cols = -gene,
+    names_to = "cell",
+    values_to = "expr"
+  )
+
+meta_expr <- meta_hp %>%
+  tibble::rownames_to_column("cell") %>%
+  select(cell, condition, celltype_manual)
+
+gene_expr_rep_driver <- expr_long %>%
+  left_join(meta_expr, by = "cell") %>%
+  left_join(module_gene_use, by = c("gene" = "SYMBOL")) %>%
+  inner_join(rep_driver_cells, by = c("module", "celltype_manual")) %>%
+  group_by(module, gene, celltype_manual, condition) %>%
+  summarise(
+    avg_expr = mean(expr, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    condition = factor(condition, levels = c("Healthy", "Periodontitis")),
+    module = factor(module, levels = c("Module 1", "Module 2", "Module 3"))
+  ) %>%
+  group_by(module, gene) %>%
+  mutate(
+    rel_expr = as.numeric(scale(avg_expr))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    rel_expr = ifelse(is.na(rel_expr), 0, rel_expr)
+  )
+
+gene_order <- module_gene_use %>%
+  filter(SYMBOL %in% gene_expr_rep_driver$gene) %>%
+  arrange(module) %>%
+  pull(SYMBOL) %>%
+  unique()
+
+gene_expr_rep_driver <- gene_expr_rep_driver %>%
+  mutate(
+    gene_module = paste(gene, module, sep = "___"),
+    gene_module = factor(
+      gene_module,
+      levels = rev(
+        paste(
+          gene_order,
+          module_gene_use$module[
+            match(gene_order, module_gene_use$SYMBOL)
+          ],
+          sep = "___"
+        )
+      )
+    )
+  )
+
+p3E <- ggplot(
+  gene_expr_rep_driver,
+  aes(
+    x = condition,
+    y = gene_module,
+    fill = rel_expr
+  )
+) +
+  geom_tile(color = "white", linewidth = 0.35) +
+  facet_grid(
+    module + celltype_manual ~ .,
+    scales = "free_y",
+    space = "free_y"
+  ) +
+  scale_y_discrete(
+    labels = function(x) gsub("___.*$", "", x)
+  ) +
+  scale_fill_gradient2(
+    low = "#4DBBD5",
+    mid = "white",
+    high = "#E64B35",
+    midpoint = 0,
+    limits = c(-2, 2),
+    oob = scales::squish,
+    name = "Relative\nexpression"
+  ) +
+  labs(
+    title = "E. Module gene expression in representative driver cells",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_classic(base_size = 12) +
+  theme_pub +
+  theme(
+    axis.text.x = element_text(angle = 35, hjust = 1),
+    axis.text.y = element_text(size = 8, face = "bold"),
+    strip.text.y = element_text(size = 8, face = "bold"),
+    legend.position = "right"
+  )
+
+############################################################
+## 9. Final Figure 3 layout
+############################################################
+
+fig3 <-
+  (p3A + p3B + plot_layout(widths = c(1.15, 0.85))) /
+  p3C /
+  (p3D + p3E + plot_layout(widths = c(1, 1))) +
+  plot_layout(
+    heights = c(1.0, 1.05, 1.0)
+  )
+
+fig3
+
+############################################################
+## 10. SAVE SECTION
+############################################################
+
+write.csv(
+  composition_df,
+  file.path(outdir3, "Figure3_celltype_composition_sample_level.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  composition_summary,
+  file.path(outdir3, "Figure3_celltype_composition_summary.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  stat_module_cell,
+  file.path(outdir3, "Figure3_module_score_statistics_all_celltypes.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  module_delta_cell,
+  file.path(outdir3, "Figure3_module_score_delta_all_celltypes.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  sig_cell_module,
+  file.path(outdir3, "Figure3_module_score_significant_positive_celltypes.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  gene_expr_rep_driver,
+  file.path(outdir3, "Figure3_representative_driver_gene_expression.csv"),
+  row.names = FALSE
+)
+
+ggsave(
+  file.path(outdir3,
+            "Figure3_single_cell_module_validation_final.pdf"),
+  fig3,
+  width = 22,
+  height = 14,
+  units = "in",
+  device = cairo_pdf
+)
+
+ggsave(
+  file.path(outdir3,
+            "Figure3_single_cell_module_validation_final.png"),
+  fig3,
+  width = 22,
+  height = 14,
+  units = "in",
+  dpi = 300
+)
+ggsave(
+  file.path(outdir3, "Figure3_single_cell_module_validation_final.png"),
+  fig3,
+  width = 18,
+  height = 13,
+  units = "in",
+  dpi = 300
+)
